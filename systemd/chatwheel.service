@@ -1,0 +1,15 @@
+[Unit]
+Description=Chatwheel - Game/Chat Audio Mixer
+After=pulseaudio.service pipewire-pulse.service
+Wants=pulseaudio.service pipewire-pulse.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/chatwheel --daemon
+Restart=on-failure
+RestartSec=5
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=PULSE_RUNTIME_PATH=/run/user/%U/pulse
+
+[Install]
+WantedBy=default.target

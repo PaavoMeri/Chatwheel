@@ -1,0 +1,27 @@
+# Build artifacts
+chatwheel
+*.o
+*.so
+*.a
+test
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*~
+
+# Build directories
+build/
+dist/
+
+# Config files
+config/chatwheel.conf
+
+# Debug files
+core
+vgcore.*
+
+# System-specific files
+.DS_Store
+Thumbs.db
