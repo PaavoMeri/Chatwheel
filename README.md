@@ -98,3 +98,9 @@ make test
 ```bash
 make uninstall
 ```
+
+## Warranty Disclaimer
+
+This software is provided "as is" and without any express or implied warranties, including, without limitation, the implied warranties of merchantability and fitness for a particular purpose. The authors assume no liability for damages, direct or consequential, which may result from the use of this software.
+
+This is free software, and you are welcome to redistribute it under the terms of the GNU General Public License v3.0.
