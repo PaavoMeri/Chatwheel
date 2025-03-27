@@ -5,16 +5,14 @@ Automatic volume control for games and chat applications based on your headset's
 ## Requirements
 
 - Linux with PulseAudio or PipeWire
-- HeadsetControl (for SteelSeries headsets)
+- HeadsetControl (for Chatmix wheel value)
 - systemd (for auto-start service)
 
 ## Compatibility
 
 This tool is designed for SteelSeries Arctis Nova series headsets with a chatmix wheel.
-Currently tested only with:
+Tested only with:
 - SteelSeries Arctis Nova 7 Wireless
-
-Other Arctis Nova models might work but are untested. Please report your experience with other models.
 
 ## Installation
 
@@ -50,9 +48,6 @@ chatwheel --remove Firefox
 # Restart service to apply changes
 chatwheel --restart
 ```
-
-**Note:** After adding or removing applications, the service needs to be restarted
-for changes to take effect.
 
 ## Configuration
 
@@ -98,9 +93,3 @@ make test
 ```bash
 make uninstall
 ```
-
-## Warranty Disclaimer
-
-This software is provided "as is" and without any express or implied warranties, including, without limitation, the implied warranties of merchantability and fitness for a particular purpose. The authors assume no liability for damages, direct or consequential, which may result from the use of this software.
-
-This is free software, and you are welcome to redistribute it under the terms of the GNU General Public License v3.0.
