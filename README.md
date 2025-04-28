@@ -44,9 +44,6 @@ chatwheel --add "Discord,chat"    # For chat audio
 
 # Remove an application (requires service restart)
 chatwheel --remove Firefox
-
-# Restart service to apply changes
-chatwheel --restart
 ```
 
 ## Configuration
@@ -55,38 +52,12 @@ Configuration is stored in:
 - User config: `~/.config/chatwheel/chatwheel.conf`
 - System config: `/etc/chatwheel/chatwheel.conf`
 
-Format:
-```
-application_name,type
-```
-Where type is:
-- 0: Game audio (full volume at chatmix top)
-- 1: Chat audio (full volume at chatmix bottom)
-
 ## How it Works
 
 chatwheel monitors your headset's chatmix wheel position:
 - Top (0): Game audio 100%, Chat audio 0%
 - Middle (64): Both at 50%
 - Bottom (128): Game audio 0%, Chat audio 100%
-
-## Troubleshooting
-
-1. Check service status:
-```bash
-systemctl --user status chatwheel
-```
-
-2. View application list:
-```bash
-chatwheel --list
-```
-
-3. Test volume control:
-```bash
-make test
-./test
-```
 
 ## Uninstall
 
