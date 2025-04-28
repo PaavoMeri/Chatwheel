@@ -1,6 +1,6 @@
 # chatwheel
 
-Automatic volume control for games and chat applications based on your headset's chatmix wheel position.
+Volume control for games and chat applications based on your headset's chatmix wheel position.
 
 ## Requirements
 
