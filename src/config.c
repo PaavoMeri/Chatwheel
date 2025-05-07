@@ -25,17 +25,7 @@ void load_config(void) {
     
     // Try system config if user config doesn't exist
     if (!f) {
-        // Create default config
-        add_application("FMOD Audio", 0);    // Unity games
-        add_application("steam_app", 0);     // Steam games
-        add_application("java", 0);          // Minecraft
-        add_application("wine", 0);          // Windows games
-        add_application("mpv", 0);           // Video player
-        add_application("Discord", 1);       // Discord
-        add_application("TeamSpeak", 1);     // TeamSpeak
-        add_application("firefox", 1);       // Browser chat
-        add_application("easyeffects", 1);   // Audio processing
-        save_config();
+        // No default config is created
         return;
     }
 
