@@ -1,6 +1,7 @@
 #include <pulse/pulseaudio.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>  // Added for log10 function
 #include "mixer.h"
 #include "../config.h"
 
@@ -63,6 +64,17 @@ struct volume_control {
     int found;  // Flag to track if we found the app
 };
 
+// Convert linear volume (0.0-1.0) to logarithmic scale for better perception
+static float linear_to_logarithmic(float linear) {
+    // Avoid log(0) which is -infinity
+    if (linear < 0.01f) return 0.0f;
+    
+    // Calculate logarithmic volume using the formula:
+    // volume_log = (10^(volume_linear) - 1) / 9
+    // This creates a logarithmic curve from 0.0 to 1.0
+    return (powf(10.0f, linear) - 1.0f) / 9.0f;
+}
+
 static void sink_input_info_cb(pa_context *c, const pa_sink_input_info *i, int eol, void *userdata) {
     if (eol || !i || !userdata) return;
     
@@ -79,7 +91,9 @@ static void sink_input_info_cb(pa_context *c, const pa_sink_input_info *i, int e
         
         printf("\nAdjusting %s volume: %d%% -> %d%%", app_name, current_vol, target_vol);
         
-        pa_volume_t vol = (pa_volume_t)(vc->target_volume * PA_VOLUME_NORM);
+        // Apply logarithmic scaling to the volume
+        float log_volume = linear_to_logarithmic(vc->target_volume);
+        pa_volume_t vol = (pa_volume_t)(log_volume * PA_VOLUME_NORM);
         pa_cvolume cvolume;
         pa_cvolume_init(&cvolume);
         pa_cvolume_set(&cvolume, i->volume.channels, vol);
@@ -139,8 +153,14 @@ void adjust_volume_based_on_chatmix(float chatmix_value) {
     float game_volume = 1.0f - normalized;
     float chat_volume = normalized;
 
+    // Calculate logarithmic equivalents for display purposes
+    float log_game_volume = linear_to_logarithmic(game_volume);
+    float log_chat_volume = linear_to_logarithmic(chat_volume);
+
     printf("\nChatmix position: %.0f%%", normalized * 100);
-    printf("\nTarget volumes - Game: %.0f%%, Chat: %.0f%%", game_volume * 100, chat_volume * 100);
+    printf("\nTarget volumes - Game: %.0f%% (%.0f%% logarithmic), Chat: %.0f%% (%.0f%% logarithmic)", 
+           game_volume * 100, log_game_volume * 100, 
+           chat_volume * 100, log_chat_volume * 100);
     
     // Update all configured applications
     for (int i = 0; i < config.count; i++) {

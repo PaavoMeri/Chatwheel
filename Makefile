@@ -1,26 +1,19 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -I src/ $(shell pkg-config --cflags libpulse)
-LDFLAGS = $(shell pkg-config --libs libpulse)
+LDFLAGS = $(shell pkg-config --libs libpulse) -lm
 SRCS = src/main.c src/headset/headset.c src/mixer/mixer.c src/config.c
 OBJS = $(SRCS:.c=.o)
 TARGET = chatwheel
-TEST = test
 
 $(TARGET): $(OBJS)
 	$(CC) $(OBJS) -o $(TARGET) $(LDFLAGS)
-
-$(TEST): src/test.c $(filter-out src/main.o,$(OBJS))
-	$(CC) $^ -o $@ $(LDFLAGS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 .PHONY: clean
 clean:
-	rm -f $(OBJS) $(TARGET) $(TEST)
-
-.PHONY: test
-test: $(TEST)
+	rm -f $(OBJS) $(TARGET)
 
 .PHONY: dirs
 dirs:

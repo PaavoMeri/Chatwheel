@@ -59,6 +59,10 @@ chatwheel monitors your headset's chatmix wheel position:
 - Middle (64): Both at 50%
 - Bottom (128): Game audio 0%, Chat audio 100%
 
+Volume changes are applied using a logarithmic scale to match human hearing perception. This provides more natural volume control with:
+- More precise adjustments at lower volumes
+- More gradual changes at higher volumes
+
 ## Uninstall
 
 ```bash
