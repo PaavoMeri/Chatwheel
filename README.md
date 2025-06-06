@@ -42,6 +42,10 @@ chatwheel --list
 chatwheel --add "Firefox,game"    # For game audio
 chatwheel --add "Discord,chat"    # For chat audio
 
+# Add with wildcard patterns for games with version numbers
+chatwheel --add "MyGame*,game"    # Matches "MyGame v1.2.3", "MyGame Beta", etc.
+chatwheel --add "Counter-Strike*,game"  # Matches any Counter-Strike variant
+
 # Remove an application (requires service restart)
 chatwheel --remove Firefox
 ```
@@ -51,6 +55,19 @@ chatwheel --remove Firefox
 Configuration is stored in:
 - User config: `~/.config/chatwheel/chatwheel.conf`
 - System config: `/etc/chatwheel/chatwheel.conf`
+
+### Pattern Matching
+
+chatwheel supports wildcard patterns in application names to handle games that include version numbers or variable suffixes:
+
+- `*` matches any number of characters
+- `?` matches exactly one character
+- Pattern matching is case-insensitive
+
+Examples:
+- `"MyGame*"` matches "MyGame v1.2.3", "MyGame Beta", "MyGame - Special Edition"
+- `"Counter-Strike*"` matches "Counter-Strike 2", "Counter-Strike: Global Offensive"
+- `"Discord*"` matches "Discord", "Discord PTB", "Discord Canary"
 
 ## How it Works
 
