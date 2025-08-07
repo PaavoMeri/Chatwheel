@@ -6,6 +6,7 @@
 // Initialize and cleanup
 int initialize_audio_server(void);
 void cleanup_audio_server(void);
+void process_audio_events(void);
 
 // Volume control functions
 int set_application_volume(const char* app_name, float volume);

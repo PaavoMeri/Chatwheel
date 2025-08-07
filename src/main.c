@@ -142,6 +142,9 @@ int main(int argc, char *argv[]) {
             prev_chatmix = chatmix;
         }
         
+        // Process any pending audio server events (e.g., new app streams)
+        process_audio_events();
+
         usleep(POLL_INTERVAL_MS * 1000);
     }
     

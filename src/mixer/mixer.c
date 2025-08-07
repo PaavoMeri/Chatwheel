@@ -8,6 +8,14 @@
 
 static pa_context *context = NULL;
 static pa_mainloop *mainloop = NULL;
+static float last_chatmix_normalized = 0.5f; // default balanced
+
+// Forward declarations for helpers used before their definitions
+static void wait_for_operation(pa_operation *op);
+static float linear_to_logarithmic(float linear);
+static void apply_current_mix_to_sink_input(pa_context *c, const pa_sink_input_info *i);
+static void subscribe_callback(pa_context *c, pa_subscription_event_type_t t, uint32_t idx, void *userdata);
+static void sink_input_apply_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud);
 
 // Add wildcard pattern matching function
 static int match_pattern(const char *pattern, const char *text) {
@@ -70,6 +78,61 @@ static void context_state_callback(pa_context *c, void *userdata) {
     }
 }
 
+static void apply_current_mix_to_sink_input(pa_context *c, const pa_sink_input_info *i) {
+    if (!i) return;
+
+    const char *app_name = pa_proplist_gets(i->proplist, "application.name");
+    const char *binary = pa_proplist_gets(i->proplist, "application.process.binary");
+
+    // Determine if this sink input matches any configured app and whether it's chat or game
+    for (int cfgIndex = 0; cfgIndex < config.count; cfgIndex++) {
+        const char *pattern = config.apps[cfgIndex].name;
+        int is_chat = config.apps[cfgIndex].is_chat;
+
+        int matches = 0;
+        if (app_name && match_pattern(pattern, app_name)) matches = 1;
+        if (!matches && binary && match_pattern(pattern, binary)) matches = 1;
+        if (!matches) continue;
+
+        float game_volume = 1.0f - last_chatmix_normalized;
+        float chat_volume = last_chatmix_normalized;
+        float linear_volume = is_chat ? chat_volume : game_volume;
+
+        float log_volume = linear_to_logarithmic(linear_volume);
+        pa_volume_t vol = (pa_volume_t)(log_volume * PA_VOLUME_NORM);
+        pa_cvolume cvolume;
+        pa_cvolume_init(&cvolume);
+        pa_cvolume_set(&cvolume, i->volume.channels, vol);
+        pa_context_set_sink_input_volume(c, i->index, &cvolume, NULL, NULL);
+        printf("\nAuto-applied current mix to %s (%s)",
+               app_name ? app_name : (binary ? binary : "unknown"),
+               is_chat ? "Chat" : "Game");
+        break;
+    }
+}
+
+static void sink_input_apply_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud) {
+    (void)ud;
+    if (eol || !info) return;
+    apply_current_mix_to_sink_input(ctx, info);
+}
+
+static void subscribe_callback(pa_context *c, pa_subscription_event_type_t t, uint32_t idx, void *userdata) {
+    (void)userdata;
+    // Only react to sink input events
+    if ((t & PA_SUBSCRIPTION_EVENT_FACILITY_MASK) != PA_SUBSCRIPTION_EVENT_SINK_INPUT) return;
+
+    pa_subscription_event_type_t type = t & PA_SUBSCRIPTION_EVENT_TYPE_MASK;
+    if (type == PA_SUBSCRIPTION_EVENT_NEW) {
+        // New app started playing: fetch info and apply current mix
+        pa_operation *op = pa_context_get_sink_input_info(c, idx, sink_input_apply_cb, NULL);
+        if (op) {
+            wait_for_operation(op);
+            pa_operation_unref(op);
+        }
+    }
+}
+
 int initialize_audio_server(void) {
     int ready = 0;
     mainloop = pa_mainloop_new();
@@ -84,7 +147,15 @@ int initialize_audio_server(void) {
         pa_mainloop_iterate(mainloop, 1, NULL);
     }
     
-    return (ready == 1) ? 0 : -1;
+    if (ready != 1) return -1;
+
+    // Subscribe to sink input events so we can apply current mix to new apps
+    pa_context_set_subscribe_callback(context, subscribe_callback, NULL);
+    pa_operation *sub = pa_context_subscribe(context,
+        (pa_subscription_mask_t)(PA_SUBSCRIPTION_MASK_SINK_INPUT), NULL, NULL);
+    if (sub) pa_operation_unref(sub);
+
+    return 0;
 }
 
 void cleanup_audio_server(void) {
@@ -95,6 +166,13 @@ void cleanup_audio_server(void) {
     if (mainloop) {
         pa_mainloop_free(mainloop);
     }
+}
+
+void process_audio_events(void) {
+    if (!mainloop) return;
+    // Non-blocking iterate to process pending context callbacks
+    int retval = 0;
+    pa_mainloop_iterate(mainloop, 0, &retval);
 }
 
 // Structure to store app info
@@ -198,6 +276,8 @@ void adjust_volume_based_on_chatmix(float chatmix_value) {
     float normalized = chatmix_value / 128.0f;
     float game_volume = 1.0f - normalized;
     float chat_volume = normalized;
+
+    last_chatmix_normalized = normalized;
 
     // Calculate logarithmic equivalents for display purposes
     float log_game_volume = linear_to_logarithmic(game_volume);
