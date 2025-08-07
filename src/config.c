@@ -126,9 +126,9 @@ int add_application(const char* name, int is_chat) {
 int remove_application(const char* name) {
     for (int i = 0; i < config.count; i++) {
         // For removal, we support both exact match and pattern match
-        if (strcasecmp(config.apps[i].name, name) == 0 || 
-            match_pattern(config.apps[i].name, name)) {
-            memmove(&config.apps[i], &config.apps[i+1], 
+        if (strcasecmp(config.apps[i].name, name) == 0 ||
+            match_pattern(name, config.apps[i].name)) {
+            memmove(&config.apps[i], &config.apps[i+1],
                     (config.count - i - 1) * sizeof(app_config_t));
             config.count--;
             return 0;
