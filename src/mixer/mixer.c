@@ -300,6 +300,21 @@ void process_audio_events(void) {
     pa_mainloop_iterate(mainloop, 0, &retval);
 }
 
+size_t get_active_audio_stream_count(void) {
+    return stream_inventory.count;
+}
+
+int get_active_audio_stream(size_t position, audio_stream_view_t *stream) {
+    if (!stream || position >= stream_inventory.count) return -1;
+
+    const audio_stream_t *inventory_stream =
+        &stream_inventory.streams[position];
+    stream->index = inventory_stream->index;
+    stream->application_name = inventory_stream->application_name;
+    stream->process_binary = inventory_stream->process_binary;
+    return 0;
+}
+
 // Structure to store app info
 typedef struct {
     uint32_t index;

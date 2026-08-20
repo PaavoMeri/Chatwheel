@@ -18,6 +18,7 @@ static void print_usage(void) {
     printf("  --remove NAME      Remove application from control\n");
     printf("  --list            List all configured applications\n");
     printf("  --list-new        List unconfigured applications\n");
+    printf("  --list-streams    List active audio stream properties\n");
     printf("  --status          Show current chatmix and volume status\n");
     printf("  --restart         Restart the service to apply changes\n");
     printf("  --help            Show this help message\n");
@@ -31,6 +32,27 @@ static void print_restart_notice(void) {
 static void handle_signal(int signum) {
     (void)signum;  // Suppress unused parameter warning
     running = 0;
+}
+
+static int print_active_audio_streams(void) {
+    size_t stream_count = get_active_audio_stream_count();
+    printf("Active audio streams (%zu):\n", stream_count);
+
+    for (size_t position = 0; position < stream_count; position++) {
+        audio_stream_view_t stream;
+        if (get_active_audio_stream(position, &stream) != 0) {
+            fprintf(stderr, "Failed to read audio stream at position %zu\n", position);
+            return -1;
+        }
+
+        printf("Sink input index: %u\n", stream.index);
+        printf("  application.name: %s\n",
+               stream.application_name ? stream.application_name : "(missing)");
+        printf("  application.process.binary: %s\n",
+               stream.process_binary ? stream.process_binary : "(missing)");
+    }
+
+    return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -83,6 +105,15 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "Application '%s' not found in configuration\n", argv[2]);
             }
             return 0;
+        }
+        else if (strcmp(argv[1], "--list-streams") == 0) {
+            if (initialize_audio_server() != 0) {
+                fprintf(stderr, "Failed to initialize audio server\n");
+                return 1;
+            }
+            int result = print_active_audio_streams();
+            cleanup_audio_server();
+            return result == 0 ? 0 : 1;
         }
         else if (strcmp(argv[1], "--list-new") == 0) {
             if (initialize_audio_server() != 0) {
