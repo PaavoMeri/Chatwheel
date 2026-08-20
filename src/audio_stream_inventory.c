@@ -16,6 +16,42 @@ static int duplicate_nullable_string(const char *source, char **copy) {
     return *copy ? 0 : -1;
 }
 
+static void free_stream_properties(audio_stream_t *stream) {
+    free(stream->application_id);
+    free(stream->application_name);
+    free(stream->process_binary);
+    free(stream->node_name);
+    stream->application_id = NULL;
+    stream->application_name = NULL;
+    stream->process_binary = NULL;
+    stream->node_name = NULL;
+}
+
+static int copy_stream_properties(audio_stream_t *stream,
+                                  const char *application_id,
+                                  const char *application_name,
+                                  const char *process_binary,
+                                  const char *node_name) {
+    if (duplicate_nullable_string(application_id, &stream->application_id) != 0) {
+        goto fail;
+    }
+    if (duplicate_nullable_string(application_name, &stream->application_name) != 0) {
+        goto fail;
+    }
+    if (duplicate_nullable_string(process_binary, &stream->process_binary) != 0) {
+        goto fail;
+    }
+    if (duplicate_nullable_string(node_name, &stream->node_name) != 0) {
+        goto fail;
+    }
+
+    return 0;
+
+fail:
+    free_stream_properties(stream);
+    return -1;
+}
+
 static int ensure_capacity(audio_stream_inventory_t *inventory) {
     if (inventory->count < inventory->capacity) return 0;
 
@@ -61,18 +97,19 @@ const audio_stream_t *audio_stream_inventory_find(
 
 int audio_stream_inventory_upsert(audio_stream_inventory_t *inventory,
                                   uint32_t index,
+                                  const char *application_id,
                                   const char *application_name,
-                                  const char *process_binary) {
+                                  const char *process_binary,
+                                  const char *node_name) {
     if (!inventory) return -1;
 
-    char *application_name_copy = NULL;
-    char *process_binary_copy = NULL;
-
-    if (duplicate_nullable_string(application_name, &application_name_copy) != 0) {
-        return -1;
-    }
-    if (duplicate_nullable_string(process_binary, &process_binary_copy) != 0) {
-        free(application_name_copy);
+    audio_stream_t replacement = {.index = index};
+    if (copy_stream_properties(
+            &replacement,
+            application_id,
+            application_name,
+            process_binary,
+            node_name) != 0) {
         return -1;
     }
 
@@ -80,23 +117,17 @@ int audio_stream_inventory_upsert(audio_stream_inventory_t *inventory,
         audio_stream_t *stream = &inventory->streams[i];
         if (stream->index != index) continue;
 
-        free(stream->application_name);
-        free(stream->process_binary);
-        stream->application_name = application_name_copy;
-        stream->process_binary = process_binary_copy;
+        free_stream_properties(stream);
+        *stream = replacement;
         return 0;
     }
 
     if (ensure_capacity(inventory) != 0) {
-        free(application_name_copy);
-        free(process_binary_copy);
+        free_stream_properties(&replacement);
         return -1;
     }
 
-    audio_stream_t *stream = &inventory->streams[inventory->count];
-    stream->index = index;
-    stream->application_name = application_name_copy;
-    stream->process_binary = process_binary_copy;
+    inventory->streams[inventory->count] = replacement;
     inventory->count++;
     return 0;
 }
@@ -109,8 +140,7 @@ int audio_stream_inventory_remove(audio_stream_inventory_t *inventory,
         audio_stream_t *stream = &inventory->streams[i];
         if (stream->index != index) continue;
 
-        free(stream->application_name);
-        free(stream->process_binary);
+        free_stream_properties(stream);
 
         if (i + 1 < inventory->count) {
             memmove(stream,
@@ -132,8 +162,7 @@ void audio_stream_inventory_clear(audio_stream_inventory_t *inventory) {
     if (!inventory) return;
 
     for (size_t i = 0; i < inventory->count; i++) {
-        free(inventory->streams[i].application_name);
-        free(inventory->streams[i].process_binary);
+        free_stream_properties(&inventory->streams[i]);
     }
 
     free(inventory->streams);
