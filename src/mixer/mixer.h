@@ -7,8 +7,10 @@
 
 typedef struct {
     uint32_t index;
+    const char *application_id;
     const char *application_name;
     const char *process_binary;
+    const char *node_name;
 } audio_stream_view_t;
 
 // Initialize and cleanup

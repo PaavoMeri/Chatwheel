@@ -46,10 +46,14 @@ static int print_active_audio_streams(void) {
         }
 
         printf("Sink input index: %u\n", stream.index);
+        printf("  application.id: %s\n",
+               stream.application_id ? stream.application_id : "(missing)");
         printf("  application.name: %s\n",
                stream.application_name ? stream.application_name : "(missing)");
         printf("  application.process.binary: %s\n",
                stream.process_binary ? stream.process_binary : "(missing)");
+        printf("  node.name: %s\n",
+               stream.node_name ? stream.node_name : "(missing)");
     }
 
     return 0;

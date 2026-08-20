@@ -20,47 +20,68 @@ static void test_init_and_find_empty_inventory(void) {
 static void test_null_inventory_contract(void) {
     audio_stream_inventory_init(NULL);
     assert(audio_stream_inventory_find(NULL, 1) == NULL);
-    assert(audio_stream_inventory_upsert(NULL, 1, "Application", "binary") == -1);
+    assert(audio_stream_inventory_upsert(
+               NULL, 1, "org.example.App", "Application", "binary", "node") == -1);
     assert(audio_stream_inventory_remove(NULL, 1) == 0);
     audio_stream_inventory_clear(NULL);
 }
 
 static void test_upsert_adds_and_updates_owned_strings(void) {
     audio_stream_inventory_t inventory;
+    char application_id[] = "org.mozilla.firefox";
     char application_name[] = "Firefox";
     char process_binary[] = "firefox";
+    char node_name[] = "Firefox";
 
     audio_stream_inventory_init(&inventory);
 
     assert(audio_stream_inventory_upsert(
-               &inventory, 42, application_name, process_binary) == 0);
+               &inventory,
+               42,
+               application_id,
+               application_name,
+               process_binary,
+               node_name) == 0);
     assert(inventory.count == 1);
 
+    application_id[0] = 'X';
     application_name[0] = 'X';
     process_binary[0] = 'X';
+    node_name[0] = 'X';
 
     const audio_stream_t *stream = audio_stream_inventory_find(&inventory, 42);
     assert(stream != NULL);
+    assert(strcmp(stream->application_id, "org.mozilla.firefox") == 0);
     assert(strcmp(stream->application_name, "Firefox") == 0);
     assert(strcmp(stream->process_binary, "firefox") == 0);
+    assert(strcmp(stream->node_name, "Firefox") == 0);
 
     assert(audio_stream_inventory_upsert(
-               &inventory, 42, "Discord", "Discord") == 0);
+               &inventory,
+               42,
+               "com.discordapp.Discord",
+               "Discord",
+               "Discord",
+               "discord-node") == 0);
     assert(inventory.count == 1);
 
     stream = audio_stream_inventory_find(&inventory, 42);
     assert(stream != NULL);
+    assert(strcmp(stream->application_id, "com.discordapp.Discord") == 0);
     assert(strcmp(stream->application_name, "Discord") == 0);
     assert(strcmp(stream->process_binary, "Discord") == 0);
+    assert(strcmp(stream->node_name, "discord-node") == 0);
 
     assert(audio_stream_inventory_upsert(
-               &inventory, 42, NULL, "discord-bin") == 0);
+               &inventory, 42, NULL, NULL, "discord-bin", NULL) == 0);
     assert(inventory.count == 1);
 
     stream = audio_stream_inventory_find(&inventory, 42);
     assert(stream != NULL);
+    assert(stream->application_id == NULL);
     assert(stream->application_name == NULL);
     assert(strcmp(stream->process_binary, "discord-bin") == 0);
+    assert(stream->node_name == NULL);
 
     audio_stream_inventory_clear(&inventory);
 }
@@ -70,19 +91,29 @@ static void test_null_properties_are_supported(void) {
 
     audio_stream_inventory_init(&inventory);
 
-    assert(audio_stream_inventory_upsert(&inventory, 7, NULL, NULL) == 0);
+    assert(audio_stream_inventory_upsert(
+               &inventory, 7, NULL, NULL, NULL, NULL) == 0);
 
     const audio_stream_t *stream = audio_stream_inventory_find(&inventory, 7);
     assert(stream != NULL);
+    assert(stream->application_id == NULL);
     assert(stream->application_name == NULL);
     assert(stream->process_binary == NULL);
+    assert(stream->node_name == NULL);
 
     assert(audio_stream_inventory_upsert(
-               &inventory, 7, "Music Player", NULL) == 0);
+               &inventory,
+               7,
+               "org.example.Player",
+               "Music Player",
+               NULL,
+               "music-node") == 0);
     stream = audio_stream_inventory_find(&inventory, 7);
     assert(stream != NULL);
+    assert(strcmp(stream->application_id, "org.example.Player") == 0);
     assert(strcmp(stream->application_name, "Music Player") == 0);
     assert(stream->process_binary == NULL);
+    assert(strcmp(stream->node_name, "music-node") == 0);
 
     audio_stream_inventory_clear(&inventory);
 }
@@ -94,7 +125,12 @@ static void test_inventory_grows(void) {
 
     for (uint32_t index = 0; index < 20; index++) {
         assert(audio_stream_inventory_upsert(
-                   &inventory, index, "Test application", "test-binary") == 0);
+                   &inventory,
+                   index,
+                   "org.example.Test",
+                   "Test application",
+                   "test-binary",
+                   "test-node") == 0);
     }
 
     assert(inventory.count == 20);
@@ -110,15 +146,24 @@ static void test_remove_releases_entry_and_preserves_others(void) {
     audio_stream_inventory_t inventory;
 
     audio_stream_inventory_init(&inventory);
-    assert(audio_stream_inventory_upsert(&inventory, 10, "One", "one") == 0);
-    assert(audio_stream_inventory_upsert(&inventory, 20, "Two", "two") == 0);
-    assert(audio_stream_inventory_upsert(&inventory, 30, "Three", "three") == 0);
+    assert(audio_stream_inventory_upsert(
+               &inventory, 10, "id.one", "One", "one", "node-one") == 0);
+    assert(audio_stream_inventory_upsert(
+               &inventory, 20, "id.two", "Two", "two", "node-two") == 0);
+    assert(audio_stream_inventory_upsert(
+               &inventory, 30, "id.three", "Three", "three", "node-three") == 0);
 
     assert(audio_stream_inventory_remove(&inventory, 20) == 1);
     assert(inventory.count == 2);
-    assert(audio_stream_inventory_find(&inventory, 10) != NULL);
+    const audio_stream_t *first = audio_stream_inventory_find(&inventory, 10);
+    assert(first != NULL);
+    assert(strcmp(first->application_id, "id.one") == 0);
+    assert(strcmp(first->node_name, "node-one") == 0);
     assert(audio_stream_inventory_find(&inventory, 20) == NULL);
-    assert(audio_stream_inventory_find(&inventory, 30) != NULL);
+    const audio_stream_t *third = audio_stream_inventory_find(&inventory, 30);
+    assert(third != NULL);
+    assert(strcmp(third->application_id, "id.three") == 0);
+    assert(strcmp(third->node_name, "node-three") == 0);
 
     assert(audio_stream_inventory_remove(&inventory, 20) == 0);
     assert(inventory.count == 2);
@@ -131,7 +176,12 @@ static void test_clear_resets_inventory(void) {
 
     audio_stream_inventory_init(&inventory);
     assert(audio_stream_inventory_upsert(
-               &inventory, 5, "Cleanup test", "cleanup-test") == 0);
+               &inventory,
+               5,
+               "org.example.Cleanup",
+               "Cleanup test",
+               "cleanup-test",
+               "cleanup-node") == 0);
 
     audio_stream_inventory_clear(&inventory);
 

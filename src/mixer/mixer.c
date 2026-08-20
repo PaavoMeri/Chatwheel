@@ -310,8 +310,10 @@ int get_active_audio_stream(size_t position, audio_stream_view_t *stream) {
     const audio_stream_t *inventory_stream =
         &stream_inventory.streams[position];
     stream->index = inventory_stream->index;
+    stream->application_id = inventory_stream->application_id;
     stream->application_name = inventory_stream->application_name;
     stream->process_binary = inventory_stream->process_binary;
+    stream->node_name = inventory_stream->node_name;
     return 0;
 }
 

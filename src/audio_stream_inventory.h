@@ -6,9 +6,11 @@
 
 typedef struct {
     uint32_t index;
-    /* These strings are owned by the containing inventory. */
+    /* All strings are owned by the containing inventory. */
+    char *application_id;
     char *application_name;
     char *process_binary;
+    char *node_name;
 } audio_stream_t;
 
 typedef struct {
@@ -32,11 +34,17 @@ const audio_stream_t *audio_stream_inventory_find(
     const audio_stream_inventory_t *inventory,
     uint32_t index);
 
-/* Returns 0 on success and -1 for an invalid inventory or allocation failure. */
+/*
+ * Copies all non-NULL properties into the inventory. Returns 0 on success and
+ * -1 for an invalid inventory or allocation failure. On failure, an existing
+ * entry with the same index remains unchanged.
+ */
 int audio_stream_inventory_upsert(audio_stream_inventory_t *inventory,
                                   uint32_t index,
+                                  const char *application_id,
                                   const char *application_name,
-                                  const char *process_binary);
+                                  const char *process_binary,
+                                  const char *node_name);
 
 /*
  * Returns 1 when the index was found and removed. Returns 0 when the index was
