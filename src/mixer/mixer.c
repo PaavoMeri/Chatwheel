@@ -4,18 +4,27 @@
 #include <math.h>  // Added for log10 function
 #include <ctype.h>  // Added for tolower function
 #include "mixer.h"
+#include "pulse_stream_lifecycle.h"
 #include "../config.h"
 
 static pa_context *context = NULL;
 static pa_mainloop *mainloop = NULL;
 static float last_chatmix_normalized = 0.5f; // default balanced
+static int has_valid_chatmix = 0;
+static audio_stream_inventory_t stream_inventory;
+
+struct snapshot_state {
+    int failed;
+};
 
 // Forward declarations for helpers used before their definitions
-static void wait_for_operation(pa_operation *op);
+static int wait_for_operation(pa_operation *op);
 static float linear_to_logarithmic(float linear);
 static void apply_current_mix_to_sink_input(pa_context *c, const pa_sink_input_info *i);
 static void subscribe_callback(pa_context *c, pa_subscription_event_type_t t, uint32_t idx, void *userdata);
-static void sink_input_apply_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud);
+static void sink_input_new_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud);
+static void sink_input_change_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud);
+static void sink_input_snapshot_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud);
 
 // Add wildcard pattern matching function
 static int match_pattern(const char *pattern, const char *text) {
@@ -78,6 +87,21 @@ static void context_state_callback(pa_context *c, void *userdata) {
     }
 }
 
+static int record_sink_input(const pa_sink_input_info *info) {
+    if (!info) return -1;
+
+    return pulse_stream_lifecycle_record(
+        &stream_inventory,
+        info->index,
+        info->proplist);
+}
+
+static void subscribe_success_callback(pa_context *c, int success, void *userdata) {
+    (void)c;
+    int *subscription_succeeded = userdata;
+    *subscription_succeeded = success;
+}
+
 static void apply_current_mix_to_sink_input(pa_context *c, const pa_sink_input_info *i) {
     if (!i) return;
 
@@ -111,10 +135,49 @@ static void apply_current_mix_to_sink_input(pa_context *c, const pa_sink_input_i
     }
 }
 
-static void sink_input_apply_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud) {
+static void sink_input_new_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud) {
     (void)ud;
-    if (eol || !info) return;
-    apply_current_mix_to_sink_input(ctx, info);
+    if (eol < 0) {
+        fprintf(stderr, "Failed to read new PulseAudio stream information\n");
+        return;
+    }
+    if (eol > 0 || !info) return;
+
+    if (record_sink_input(info) != 0) {
+        fprintf(stderr, "Failed to store PulseAudio stream %u\n", info->index);
+    }
+    if (has_valid_chatmix) {
+        apply_current_mix_to_sink_input(ctx, info);
+    }
+}
+
+static void sink_input_change_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud) {
+    (void)ctx;
+    (void)ud;
+    if (eol < 0) {
+        fprintf(stderr, "Failed to read changed PulseAudio stream information\n");
+        return;
+    }
+    if (eol > 0 || !info) return;
+
+    if (record_sink_input(info) != 0) {
+        fprintf(stderr, "Failed to update PulseAudio stream %u\n", info->index);
+    }
+}
+
+static void sink_input_snapshot_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud) {
+    (void)ctx;
+    struct snapshot_state *state = ud;
+
+    if (eol < 0) {
+        state->failed = 1;
+        return;
+    }
+    if (eol > 0 || !info) return;
+
+    if (record_sink_input(info) != 0) {
+        state->failed = 1;
+    }
 }
 
 static void subscribe_callback(pa_context *c, pa_subscription_event_type_t t, uint32_t idx, void *userdata) {
@@ -123,49 +186,111 @@ static void subscribe_callback(pa_context *c, pa_subscription_event_type_t t, ui
     if ((t & PA_SUBSCRIPTION_EVENT_FACILITY_MASK) != PA_SUBSCRIPTION_EVENT_SINK_INPUT) return;
 
     pa_subscription_event_type_t type = t & PA_SUBSCRIPTION_EVENT_TYPE_MASK;
+    if (type == PA_SUBSCRIPTION_EVENT_REMOVE) {
+        audio_stream_inventory_remove(&stream_inventory, idx);
+        return;
+    }
+
+    pa_sink_input_info_cb_t callback = NULL;
     if (type == PA_SUBSCRIPTION_EVENT_NEW) {
-        // New app started playing: fetch info and apply current mix
-        pa_operation *op = pa_context_get_sink_input_info(c, idx, sink_input_apply_cb, NULL);
-        if (op) {
-            wait_for_operation(op);
-            pa_operation_unref(op);
+        callback = sink_input_new_cb;
+    } else if (type == PA_SUBSCRIPTION_EVENT_CHANGE) {
+        callback = sink_input_change_cb;
+    }
+
+    if (callback) {
+        pa_operation *op = pa_context_get_sink_input_info(c, idx, callback, NULL);
+        if (!op) {
+            fprintf(stderr, "Failed to request PulseAudio stream %u\n", idx);
+            return;
         }
+        pa_operation_unref(op);
     }
 }
 
 int initialize_audio_server(void) {
     int ready = 0;
+    has_valid_chatmix = 0;
+    audio_stream_inventory_init(&stream_inventory);
     mainloop = pa_mainloop_new();
-    pa_mainloop_api *mainloop_api = pa_mainloop_get_api(mainloop);
-    
-    context = pa_context_new(mainloop_api, "chatwheel");
-    pa_context_connect(context, NULL, 0, NULL);
-    
-    pa_context_set_state_callback(context, context_state_callback, &ready);
-    
-    while (ready == 0) {
-        pa_mainloop_iterate(mainloop, 1, NULL);
-    }
-    
-    if (ready != 1) return -1;
+    if (!mainloop) goto fail;
 
-    // Subscribe to sink input events so we can apply current mix to new apps
+    pa_mainloop_api *mainloop_api = pa_mainloop_get_api(mainloop);
+    context = pa_context_new(mainloop_api, "chatwheel");
+    if (!context) goto fail;
+
+    pa_context_set_state_callback(context, context_state_callback, &ready);
+    if (pa_context_connect(context, NULL, 0, NULL) < 0) goto fail;
+
+    while (ready == 0) {
+        if (pa_mainloop_iterate(mainloop, 1, NULL) < 0) goto fail;
+    }
+
+    pa_context_set_state_callback(context, NULL, NULL);
+    if (ready != 1) goto fail;
+
+    // Subscribe before taking the snapshot so changes during it are not missed.
     pa_context_set_subscribe_callback(context, subscribe_callback, NULL);
+    int subscription_succeeded = 0;
     pa_operation *sub = pa_context_subscribe(context,
-        (pa_subscription_mask_t)(PA_SUBSCRIPTION_MASK_SINK_INPUT), NULL, NULL);
-    if (sub) pa_operation_unref(sub);
+        (pa_subscription_mask_t)(PA_SUBSCRIPTION_MASK_SINK_INPUT),
+        subscribe_success_callback,
+        &subscription_succeeded);
+    if (!sub) goto fail;
+
+    int subscription_wait_result = wait_for_operation(sub);
+    pa_operation_state_t subscription_state = pa_operation_get_state(sub);
+    if (subscription_state == PA_OPERATION_RUNNING) {
+        pa_operation_cancel(sub);
+    }
+    pa_operation_unref(sub);
+    if (subscription_wait_result != 0 ||
+        subscription_state != PA_OPERATION_DONE ||
+        !subscription_succeeded) {
+        goto fail;
+    }
+
+    struct snapshot_state snapshot = {0};
+    pa_operation *snapshot_op = pa_context_get_sink_input_info_list(
+        context,
+        sink_input_snapshot_cb,
+        &snapshot);
+    if (!snapshot_op) goto fail;
+
+    int snapshot_wait_result = wait_for_operation(snapshot_op);
+    pa_operation_state_t snapshot_operation_state =
+        pa_operation_get_state(snapshot_op);
+    if (snapshot_operation_state == PA_OPERATION_RUNNING) {
+        pa_operation_cancel(snapshot_op);
+    }
+    pa_operation_unref(snapshot_op);
+    if (snapshot_wait_result != 0 ||
+        snapshot_operation_state != PA_OPERATION_DONE ||
+        snapshot.failed) {
+        goto fail;
+    }
 
     return 0;
+
+fail:
+    cleanup_audio_server();
+    return -1;
 }
 
 void cleanup_audio_server(void) {
     if (context) {
+        pa_context_set_state_callback(context, NULL, NULL);
+        pa_context_set_subscribe_callback(context, NULL, NULL);
         pa_context_disconnect(context);
         pa_context_unref(context);
+        context = NULL;
     }
     if (mainloop) {
         pa_mainloop_free(mainloop);
+        mainloop = NULL;
     }
+    audio_stream_inventory_clear(&stream_inventory);
+    has_valid_chatmix = 0;
 }
 
 void process_audio_events(void) {
@@ -173,6 +298,21 @@ void process_audio_events(void) {
     // Non-blocking iterate to process pending context callbacks
     int retval = 0;
     pa_mainloop_iterate(mainloop, 0, &retval);
+}
+
+size_t get_active_audio_stream_count(void) {
+    return stream_inventory.count;
+}
+
+int get_active_audio_stream(size_t position, audio_stream_view_t *stream) {
+    if (!stream || position >= stream_inventory.count) return -1;
+
+    const audio_stream_t *inventory_stream =
+        &stream_inventory.streams[position];
+    stream->index = inventory_stream->index;
+    stream->application_name = inventory_stream->application_name;
+    stream->process_binary = inventory_stream->process_binary;
+    return 0;
 }
 
 // Structure to store app info
@@ -227,10 +367,14 @@ static void sink_input_info_cb(pa_context *c, const pa_sink_input_info *i, int e
 }
 
 // Add this helper function
-static void wait_for_operation(pa_operation *op) {
+static int wait_for_operation(pa_operation *op) {
+    if (!op) return -1;
+
     while (op && pa_operation_get_state(op) == PA_OPERATION_RUNNING) {
-        pa_mainloop_iterate(mainloop, 1, NULL);
+        if (pa_mainloop_iterate(mainloop, 1, NULL) < 0) return -1;
     }
+
+    return 0;
 }
 
 static void list_apps_callback(pa_context *c, const pa_sink_input_info *i, int eol, void *userdata) {
@@ -278,6 +422,7 @@ void adjust_volume_based_on_chatmix(float chatmix_value) {
     float chat_volume = normalized;
 
     last_chatmix_normalized = normalized;
+    has_valid_chatmix = 1;
 
     // Calculate logarithmic equivalents for display purposes
     float log_game_volume = linear_to_logarithmic(game_volume);
