@@ -355,6 +355,27 @@ int get_active_audio_stream(size_t position, audio_stream_view_t *stream) {
     return 0;
 }
 
+size_t get_active_application_count(void) {
+    return application_inventory_ready ? application_inventory.count : 0;
+}
+
+int get_active_application(size_t position, active_application_view_t *view) {
+    if (!application_inventory_ready ||
+        !view ||
+        position >= application_inventory.count) {
+        return -1;
+    }
+
+    const active_application_t *application =
+        &application_inventory.applications[position];
+    view->identity_property = application->identity_property;
+    view->identity_value = application->identity_value;
+    view->display_name = application->display_name;
+    view->stream_indexes = application->stream_indexes;
+    view->stream_count = application->stream_count;
+    return 0;
+}
+
 // Structure to store app info
 typedef struct {
     uint32_t index;
