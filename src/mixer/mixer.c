@@ -2,11 +2,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>  // Added for log10 function
-#include <ctype.h>  // Added for tolower function
 #include "mixer.h"
 #include "pulse_stream_lifecycle.h"
 #include "../active_application_inventory.h"
 #include "../config.h"
+#include "../pattern_matcher.h"
 
 static pa_context *context = NULL;
 static pa_mainloop *mainloop = NULL;
@@ -28,51 +28,6 @@ static void subscribe_callback(pa_context *c, pa_subscription_event_type_t t, ui
 static void sink_input_new_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud);
 static void sink_input_change_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud);
 static void sink_input_snapshot_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud);
-
-// Add wildcard pattern matching function
-static int match_pattern(const char *pattern, const char *text) {
-    // If no pattern, do exact match
-    if (!pattern || !text) return 0;
-    
-    // Handle exact match case (no wildcards)
-    if (!strchr(pattern, '*') && !strchr(pattern, '?')) {
-        return strcasecmp(pattern, text) == 0;
-    }
-    
-    // Simple wildcard matching
-    const char *p = pattern;
-    const char *t = text;
-    
-    while (*p && *t) {
-        if (*p == '*') {
-            // Skip multiple asterisks
-            while (*p == '*') p++;
-            
-            // If asterisk is at the end, match everything
-            if (!*p) return 1;
-            
-            // Find the next non-wildcard character in pattern
-            while (*t) {
-                if (match_pattern(p, t)) return 1;
-                t++;
-            }
-            return 0;
-        }
-        else if (*p == '?' || tolower(*p) == tolower(*t)) {
-            p++;
-            t++;
-        }
-        else {
-            return 0;
-        }
-    }
-    
-    // Handle trailing asterisks in pattern
-    while (*p == '*') p++;
-    
-    // Both should be at end for successful match
-    return (*p == 0 && *t == 0);
-}
 
 static void context_state_callback(pa_context *c, void *userdata) {
     pa_context_state_t state = pa_context_get_state(c);
@@ -117,8 +72,8 @@ static void apply_current_mix_to_sink_input(pa_context *c, const pa_sink_input_i
         int is_chat = config.apps[cfgIndex].is_chat;
 
         int matches = 0;
-        if (app_name && match_pattern(pattern, app_name)) matches = 1;
-        if (!matches && binary && match_pattern(pattern, binary)) matches = 1;
+        if (app_name && pattern_matches_text(pattern, app_name)) matches = 1;
+        if (!matches && binary && pattern_matches_text(pattern, binary)) matches = 1;
         if (!matches) continue;
 
         float game_volume = 1.0f - last_chatmix_normalized;
@@ -408,8 +363,8 @@ static void sink_input_info_cb(pa_context *c, const pa_sink_input_info *i, int e
     const char *binary = pa_proplist_gets(i->proplist, "application.process.binary");
     
     // Match either application name or binary name using pattern matching
-    if ((app_name && match_pattern(vc->app_name, app_name)) ||
-        (binary && match_pattern(vc->app_name, binary))) {
+    if ((app_name && pattern_matches_text(vc->app_name, app_name)) ||
+        (binary && pattern_matches_text(vc->app_name, binary))) {
         
         int current_vol = (int)(pa_cvolume_avg(&i->volume) * 100.0f / PA_VOLUME_NORM);
         int target_vol = (int)(vc->target_volume * 100);
@@ -520,7 +475,7 @@ void list_applications(void) {
 
 static int is_app_configured(const char* app_name) {
     for (int i = 0; i < config.count; i++) {
-        if (match_pattern(config.apps[i].name, app_name)) {
+        if (pattern_matches_text(config.apps[i].name, app_name)) {
             return 1;
         }
     }
