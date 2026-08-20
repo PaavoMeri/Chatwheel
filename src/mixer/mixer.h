@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <pulse/pulseaudio.h> // Include PulseAudio or PipeWire headers as needed
+#include "../application_identity.h"
 
 typedef struct {
     uint32_t index;
@@ -12,6 +13,14 @@ typedef struct {
     const char *process_binary;
     const char *node_name;
 } audio_stream_view_t;
+
+typedef struct {
+    application_identity_property_t identity_property;
+    const char *identity_value;
+    const char *display_name;
+    const uint32_t *stream_indexes;
+    size_t stream_count;
+} active_application_view_t;
 
 // Initialize and cleanup
 int initialize_audio_server(void);
@@ -28,6 +37,23 @@ size_t get_active_audio_stream_count(void);
  * -1 when stream is NULL or position is out of bounds.
  */
 int get_active_audio_stream(size_t position, audio_stream_view_t *stream);
+
+/*
+ * Returns the number of active applications after initial application
+ * synchronization is ready. Returns 0 while the inventory is unavailable.
+ */
+size_t get_active_application_count(void);
+
+/*
+ * Copies one application's read-only view to view. The view struct is owned by
+ * the caller, but all pointer fields are borrowed from the private application
+ * inventory. The caller must not modify or free borrowed data. Any successful
+ * application-inventory rebuild or cleanup_audio_server() invalidates it, so
+ * the view must not be retained while audio events are processed. Returns 0 on
+ * success and -1 when view is NULL, position is out of bounds, or initial
+ * application synchronization is not ready.
+ */
+int get_active_application(size_t position, active_application_view_t *view);
 
 // Volume control functions
 int set_application_volume(const char* app_name, float volume);

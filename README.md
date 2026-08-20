@@ -116,13 +116,19 @@ Restart the service after changing the configuration:
 chatwheel --restart
 ```
 
-Inspect the PulseAudio properties currently recorded in the active stream inventory:
+Inspect the individual sink inputs and their raw identity properties:
 
 ```sh
 chatwheel --list-streams
 ```
 
-The command prints each sink-input index together with `application.name` and `application.process.binary`. It is primarily a diagnostic command for checking how applications appear to PulseAudio or PipeWire-Pulse.
+Inspect the logical applications derived from those streams and the stream indexes grouped into each application:
+
+```sh
+chatwheel --list-active
+```
+
+Both commands are diagnostic. `--list-streams` shows individual sink inputs and their raw `application.id`, `application.name`, `application.process.binary`, and `node.name` properties. `--list-active` shows the derived canonical identity, display name, and stream indexes for each logical application. It does not yet show Game, Chat, or Unassigned classification.
 
 The legacy command below performs a separate, one-time listing:
 
@@ -175,7 +181,7 @@ Because of this conversion, the center position produces approximately 24% Pulse
 
 Chatwheel sets an absolute volume on every matching stream and applies the same value to all of its channels. It does not currently preserve a stream's previous volume or channel balance.
 
-The daemon keeps an in-memory inventory of active sink inputs. It takes an initial snapshot when connecting to PulseAudio and then tracks new, changed, and removed streams. The inventory is not persisted to disk and is currently exposed only through the diagnostic `--list-streams` command.
+The daemon keeps in-memory inventories of active sink inputs and derived logical applications. It takes an initial snapshot when connecting to PulseAudio and then tracks new, changed, and removed streams. The inventories are not persisted to disk and are exposed through the diagnostic `--list-streams` and `--list-active` commands.
 
 ## Current limitations
 

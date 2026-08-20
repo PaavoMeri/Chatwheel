@@ -5,13 +5,16 @@
 #include <ctype.h>  // Added for tolower function
 #include "mixer.h"
 #include "pulse_stream_lifecycle.h"
+#include "../active_application_inventory.h"
 #include "../config.h"
 
 static pa_context *context = NULL;
 static pa_mainloop *mainloop = NULL;
 static float last_chatmix_normalized = 0.5f; // default balanced
 static int has_valid_chatmix = 0;
+static int application_inventory_ready = 0;
 static audio_stream_inventory_t stream_inventory;
+static active_application_inventory_t application_inventory;
 
 struct snapshot_state {
     int failed;
@@ -145,6 +148,13 @@ static void sink_input_new_cb(pa_context *ctx, const pa_sink_input_info *info, i
 
     if (record_sink_input(info) != 0) {
         fprintf(stderr, "Failed to store PulseAudio stream %u\n", info->index);
+    } else if (application_inventory_ready &&
+               active_application_inventory_rebuild(
+                   &application_inventory,
+                   &stream_inventory) != 0) {
+        fprintf(stderr,
+                "Failed to rebuild active applications after new stream %u\n",
+                info->index);
     }
     if (has_valid_chatmix) {
         apply_current_mix_to_sink_input(ctx, info);
@@ -162,6 +172,13 @@ static void sink_input_change_cb(pa_context *ctx, const pa_sink_input_info *info
 
     if (record_sink_input(info) != 0) {
         fprintf(stderr, "Failed to update PulseAudio stream %u\n", info->index);
+    } else if (application_inventory_ready &&
+               active_application_inventory_rebuild(
+                   &application_inventory,
+                   &stream_inventory) != 0) {
+        fprintf(stderr,
+                "Failed to rebuild active applications after changed stream %u\n",
+                info->index);
     }
 }
 
@@ -188,6 +205,14 @@ static void subscribe_callback(pa_context *c, pa_subscription_event_type_t t, ui
     pa_subscription_event_type_t type = t & PA_SUBSCRIPTION_EVENT_TYPE_MASK;
     if (type == PA_SUBSCRIPTION_EVENT_REMOVE) {
         audio_stream_inventory_remove(&stream_inventory, idx);
+        if (application_inventory_ready &&
+            active_application_inventory_rebuild(
+                &application_inventory,
+                &stream_inventory) != 0) {
+            fprintf(stderr,
+                    "Failed to rebuild active applications after removed stream %u\n",
+                    idx);
+        }
         return;
     }
 
@@ -211,7 +236,9 @@ static void subscribe_callback(pa_context *c, pa_subscription_event_type_t t, ui
 int initialize_audio_server(void) {
     int ready = 0;
     has_valid_chatmix = 0;
+    application_inventory_ready = 0;
     audio_stream_inventory_init(&stream_inventory);
+    active_application_inventory_init(&application_inventory);
     mainloop = pa_mainloop_new();
     if (!mainloop) goto fail;
 
@@ -270,6 +297,15 @@ int initialize_audio_server(void) {
         goto fail;
     }
 
+    if (active_application_inventory_rebuild(
+            &application_inventory,
+            &stream_inventory) != 0) {
+        fprintf(stderr,
+                "Failed to build active application inventory from PulseAudio snapshot\n");
+        goto fail;
+    }
+    application_inventory_ready = 1;
+
     return 0;
 
 fail:
@@ -278,6 +314,7 @@ fail:
 }
 
 void cleanup_audio_server(void) {
+    application_inventory_ready = 0;
     if (context) {
         pa_context_set_state_callback(context, NULL, NULL);
         pa_context_set_subscribe_callback(context, NULL, NULL);
@@ -289,6 +326,7 @@ void cleanup_audio_server(void) {
         pa_mainloop_free(mainloop);
         mainloop = NULL;
     }
+    active_application_inventory_clear(&application_inventory);
     audio_stream_inventory_clear(&stream_inventory);
     has_valid_chatmix = 0;
 }
@@ -314,6 +352,27 @@ int get_active_audio_stream(size_t position, audio_stream_view_t *stream) {
     stream->application_name = inventory_stream->application_name;
     stream->process_binary = inventory_stream->process_binary;
     stream->node_name = inventory_stream->node_name;
+    return 0;
+}
+
+size_t get_active_application_count(void) {
+    return application_inventory_ready ? application_inventory.count : 0;
+}
+
+int get_active_application(size_t position, active_application_view_t *view) {
+    if (!application_inventory_ready ||
+        !view ||
+        position >= application_inventory.count) {
+        return -1;
+    }
+
+    const active_application_t *application =
+        &application_inventory.applications[position];
+    view->identity_property = application->identity_property;
+    view->identity_value = application->identity_value;
+    view->display_name = application->display_name;
+    view->stream_indexes = application->stream_indexes;
+    view->stream_count = application->stream_count;
     return 0;
 }
 

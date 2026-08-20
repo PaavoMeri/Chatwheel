@@ -19,6 +19,7 @@ static void print_usage(void) {
     printf("  --list            List all configured applications\n");
     printf("  --list-new        List unconfigured applications\n");
     printf("  --list-streams    List active audio stream properties\n");
+    printf("  --list-active     List active logical applications\n");
     printf("  --status          Show current chatmix and volume status\n");
     printf("  --restart         Restart the service to apply changes\n");
     printf("  --help            Show this help message\n");
@@ -54,6 +55,63 @@ static int print_active_audio_streams(void) {
                stream.process_binary ? stream.process_binary : "(missing)");
         printf("  node.name: %s\n",
                stream.node_name ? stream.node_name : "(missing)");
+    }
+
+    return 0;
+}
+
+static const char *identity_property_label(
+    application_identity_property_t property) {
+    switch (property) {
+        case APPLICATION_IDENTITY_PROPERTY_NONE:
+            return "(none)";
+        case APPLICATION_IDENTITY_PROPERTY_APPLICATION_ID:
+            return "application.id";
+        case APPLICATION_IDENTITY_PROPERTY_APPLICATION_NAME:
+            return "application.name";
+        case APPLICATION_IDENTITY_PROPERTY_PROCESS_BINARY:
+            return "application.process.binary";
+        case APPLICATION_IDENTITY_PROPERTY_NODE_NAME:
+            return "node.name";
+        default:
+            return "(unknown)";
+    }
+}
+
+static int print_active_applications(void) {
+    size_t application_count = get_active_application_count();
+    printf("Active applications (%zu):\n", application_count);
+
+    for (size_t position = 0; position < application_count; position++) {
+        active_application_view_t application;
+        if (get_active_application(position, &application) != 0) {
+            fprintf(stderr,
+                    "Failed to read active application at position %zu\n",
+                    position);
+            return -1;
+        }
+
+        printf("Application %zu:\n", position + 1);
+        printf("  display name: %s\n",
+               application.display_name ? application.display_name : "(missing)");
+        printf("  identity property: %s\n",
+               identity_property_label(application.identity_property));
+        printf("  identity value: %s\n",
+               application.identity_value ? application.identity_value : "(missing)");
+        printf("  stream count: %zu\n", application.stream_count);
+        printf("  stream indexes:");
+        if (!application.stream_indexes) {
+            printf(" (missing)\n");
+            continue;
+        }
+        if (application.stream_count == 0) {
+            printf(" (none)\n");
+            continue;
+        }
+        for (size_t i = 0; i < application.stream_count; i++) {
+            printf("%s%u", i == 0 ? " " : ", ", application.stream_indexes[i]);
+        }
+        printf("\n");
     }
 
     return 0;
@@ -116,6 +174,15 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
             int result = print_active_audio_streams();
+            cleanup_audio_server();
+            return result == 0 ? 0 : 1;
+        }
+        else if (strcmp(argv[1], "--list-active") == 0) {
+            if (initialize_audio_server() != 0) {
+                fprintf(stderr, "Failed to initialize audio server\n");
+                return 1;
+            }
+            int result = print_active_applications();
             cleanup_audio_server();
             return result == 0 ? 0 : 1;
         }
