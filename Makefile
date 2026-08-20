@@ -3,12 +3,14 @@ CFLAGS = -Wall -Wextra -I src/ $(shell pkg-config --cflags libpulse)
 LDFLAGS = $(shell pkg-config --libs libpulse) -lm
 SRCS = src/main.c src/headset/headset.c src/mixer/mixer.c src/config.c \
 	src/audio_stream_inventory.c src/application_identity.c \
+	src/active_application_inventory.c \
 	src/mixer/pulse_stream_lifecycle.c
 OBJS = $(SRCS:.c=.o)
 TARGET = chatwheel
 TEST_TARGET = build/test_audio_stream_inventory
 PULSE_LIFECYCLE_TEST_TARGET = build/test_pulse_stream_lifecycle
 APPLICATION_IDENTITY_TEST_TARGET = build/test_application_identity
+ACTIVE_APPLICATION_TEST_TARGET = build/test_active_application_inventory
 
 $(TARGET): $(OBJS)
 	$(CC) $(OBJS) -o $(TARGET) $(LDFLAGS)
@@ -18,10 +20,11 @@ $(TARGET): $(OBJS)
 
 .PHONY: test
 test: $(TEST_TARGET) $(PULSE_LIFECYCLE_TEST_TARGET) \
-		$(APPLICATION_IDENTITY_TEST_TARGET)
+		$(APPLICATION_IDENTITY_TEST_TARGET) $(ACTIVE_APPLICATION_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(PULSE_LIFECYCLE_TEST_TARGET)
 	./$(APPLICATION_IDENTITY_TEST_TARGET)
+	./$(ACTIVE_APPLICATION_TEST_TARGET)
 
 $(TEST_TARGET): tests/test_audio_stream_inventory.c src/audio_stream_inventory.c \
 		src/audio_stream_inventory.h
@@ -47,10 +50,20 @@ $(APPLICATION_IDENTITY_TEST_TARGET): tests/test_application_identity.c \
 		tests/test_application_identity.c src/application_identity.c \
 		-o $(APPLICATION_IDENTITY_TEST_TARGET)
 
+$(ACTIVE_APPLICATION_TEST_TARGET): tests/test_active_application_inventory.c \
+		src/active_application_inventory.c src/active_application_inventory.h \
+		src/application_identity.c src/application_identity.h \
+		src/audio_stream_inventory.c src/audio_stream_inventory.h
+	mkdir -p build
+	$(CC) -Wall -Wextra -Werror -I src/ \
+		tests/test_active_application_inventory.c \
+		src/active_application_inventory.c src/application_identity.c \
+		src/audio_stream_inventory.c -o $(ACTIVE_APPLICATION_TEST_TARGET)
+
 .PHONY: clean
 clean:
 	rm -f $(OBJS) $(TARGET) $(TEST_TARGET) $(PULSE_LIFECYCLE_TEST_TARGET) \
-		$(APPLICATION_IDENTITY_TEST_TARGET)
+		$(APPLICATION_IDENTITY_TEST_TARGET) $(ACTIVE_APPLICATION_TEST_TARGET)
 
 .PHONY: dirs
 dirs:
