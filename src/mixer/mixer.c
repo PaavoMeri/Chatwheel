@@ -1,8 +1,8 @@
 #include <pulse/pulseaudio.h>
 #include <stdio.h>
 #include <string.h>
-#include <math.h>  // Added for log10 function
 #include "mixer.h"
+#include "chatmix_volume.h"
 #include "pulse_stream_lifecycle.h"
 #include "../active_application_inventory.h"
 #include "../application_classifier.h"
@@ -11,7 +11,7 @@
 
 static pa_context *context = NULL;
 static pa_mainloop *mainloop = NULL;
-static float last_chatmix_normalized = 0.5f; // default balanced
+static chatmix_volume_targets_t last_chatmix_targets;
 static int has_valid_chatmix = 0;
 static int application_inventory_ready = 0;
 static audio_stream_inventory_t stream_inventory;
@@ -23,7 +23,6 @@ struct snapshot_state {
 
 // Forward declarations for helpers used before their definitions
 static int wait_for_operation(pa_operation *op);
-static float linear_to_logarithmic(float linear);
 static void apply_current_mix_to_sink_input(pa_context *c, const pa_sink_input_info *i);
 static void subscribe_callback(pa_context *c, pa_subscription_event_type_t t, uint32_t idx, void *userdata);
 static void sink_input_new_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud);
@@ -77,12 +76,9 @@ static void apply_current_mix_to_sink_input(pa_context *c, const pa_sink_input_i
         if (!matches && binary && pattern_matches_text(pattern, binary)) matches = 1;
         if (!matches) continue;
 
-        float game_volume = 1.0f - last_chatmix_normalized;
-        float chat_volume = last_chatmix_normalized;
-        float linear_volume = is_chat ? chat_volume : game_volume;
-
-        float log_volume = linear_to_logarithmic(linear_volume);
-        pa_volume_t vol = (pa_volume_t)(log_volume * PA_VOLUME_NORM);
+        pa_volume_t vol = is_chat
+            ? last_chatmix_targets.chat.pulse
+            : last_chatmix_targets.game.pulse;
         pa_cvolume cvolume;
         pa_cvolume_init(&cvolume);
         pa_cvolume_set(&cvolume, i->volume.channels, vol);
@@ -349,19 +345,9 @@ typedef struct {
 struct volume_control {
     const char* app_name;
     float target_volume;
+    pa_volume_t pulse_volume;
     int found;  // Flag to track if we found the app
 };
-
-// Convert linear volume (0.0-1.0) to logarithmic scale for better perception
-static float linear_to_logarithmic(float linear) {
-    // Avoid log(0) which is -infinity
-    if (linear < 0.01f) return 0.0f;
-    
-    // Calculate logarithmic volume using the formula:
-    // volume_log = (10^(volume_linear) - 1) / 9
-    // This creates a logarithmic curve from 0.0 to 1.0
-    return (powf(10.0f, linear) - 1.0f) / 9.0f;
-}
 
 static void sink_input_info_cb(pa_context *c, const pa_sink_input_info *i, int eol, void *userdata) {
     if (eol || !i || !userdata) return;
@@ -379,12 +365,9 @@ static void sink_input_info_cb(pa_context *c, const pa_sink_input_info *i, int e
         
         printf("\nAdjusting %s volume: %d%% -> %d%%", app_name, current_vol, target_vol);
         
-        // Apply logarithmic scaling to the volume
-        float log_volume = linear_to_logarithmic(vc->target_volume);
-        pa_volume_t vol = (pa_volume_t)(log_volume * PA_VOLUME_NORM);
         pa_cvolume cvolume;
         pa_cvolume_init(&cvolume);
-        pa_cvolume_set(&cvolume, i->volume.channels, vol);
+        pa_cvolume_set(&cvolume, i->volume.channels, vc->pulse_volume);
         pa_context_set_sink_input_volume(c, i->index, &cvolume, NULL, NULL);
         vc->found = 1;
     }
@@ -420,12 +403,13 @@ static void list_apps_callback(pa_context *c, const pa_sink_input_info *i, int e
     }
 }
 
-int set_application_volume(const char* app_name, float volume) {
-    if (!context || volume < 0.0f || volume > 1.0f) return -1;
-
+static int set_application_volume_target(
+    const char *app_name,
+    const chatmix_volume_target_t *target) {
     struct volume_control vc = {
         .app_name = app_name,
-        .target_volume = volume,
+        .target_volume = target->linear,
+        .pulse_volume = target->pulse,
         .found = 0
     };
 
@@ -440,27 +424,36 @@ int set_application_volume(const char* app_name, float volume) {
     return -1;
 }
 
-void adjust_volume_based_on_chatmix(float chatmix_value) {
-    float normalized = chatmix_value / 128.0f;
-    float game_volume = 1.0f - normalized;
-    float chat_volume = normalized;
+int set_application_volume(const char* app_name, float volume) {
+    if (!context) return -1;
 
-    last_chatmix_normalized = normalized;
+    chatmix_volume_target_t target;
+    if (chatmix_volume_target_calculate(volume, &target) != 0) return -1;
+
+    return set_application_volume_target(app_name, &target);
+}
+
+void adjust_volume_based_on_chatmix(float chatmix_value) {
+    chatmix_volume_targets_t targets;
+    if (chatmix_volume_targets_calculate(chatmix_value, &targets) != 0) {
+        fprintf(stderr, "Invalid ChatMix value: %.0f\n", chatmix_value);
+        return;
+    }
+
+    last_chatmix_targets = targets;
     has_valid_chatmix = 1;
 
-    // Calculate logarithmic equivalents for display purposes
-    float log_game_volume = linear_to_logarithmic(game_volume);
-    float log_chat_volume = linear_to_logarithmic(chat_volume);
-
-    printf("\nChatmix position: %.0f%%", normalized * 100);
+    printf("\nChatmix position: %.0f%%", targets.normalized * 100);
     printf("\nTarget volumes - Game: %.0f%% (%.0f%% logarithmic), Chat: %.0f%% (%.0f%% logarithmic)", 
-           game_volume * 100, log_game_volume * 100, 
-           chat_volume * 100, log_chat_volume * 100);
+           targets.game.linear * 100, targets.game.logarithmic * 100,
+           targets.chat.linear * 100, targets.chat.logarithmic * 100);
     
     // Update all configured applications
     for (int i = 0; i < config.count; i++) {
-        float volume = config.apps[i].is_chat ? chat_volume : game_volume;
-        if (set_application_volume(config.apps[i].name, volume) == 0) {
+        const chatmix_volume_target_t *target = config.apps[i].is_chat
+            ? &targets.chat
+            : &targets.game;
+        if (set_application_volume_target(config.apps[i].name, target) == 0) {
             printf("\nUpdated %s (%s)", config.apps[i].name, 
                    config.apps[i].is_chat ? "Chat" : "Game");
         }
