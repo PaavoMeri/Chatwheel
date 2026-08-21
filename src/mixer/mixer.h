@@ -42,8 +42,9 @@ size_t get_active_audio_stream_count(void);
 int get_active_audio_stream(size_t position, audio_stream_view_t *stream);
 
 /*
- * Returns the number of active applications after initial application
- * synchronization is ready. Returns 0 while the inventory is unavailable.
+ * Returns the number of active applications while the derived inventory is
+ * synchronized with the raw stream inventory. Returns 0 before initial
+ * synchronization and after a rebuild failure, until a later rebuild succeeds.
  */
 size_t get_active_application_count(void);
 
@@ -55,7 +56,7 @@ size_t get_active_application_count(void);
  * the view must not be retained while audio events are processed. Classification
  * fields are copied by value and describe the configuration loaded when this
  * function is called. Returns 0 on success and -1 when view is NULL, position
- * is out of bounds, or initial application synchronization is not ready.
+ * is out of bounds, or the derived inventory is not currently synchronized.
  */
 int get_active_application(size_t position, active_application_view_t *view);
 
