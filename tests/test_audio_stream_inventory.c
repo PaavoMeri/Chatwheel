@@ -21,7 +21,7 @@ static void test_null_inventory_contract(void) {
     audio_stream_inventory_init(NULL);
     assert(audio_stream_inventory_find(NULL, 1) == NULL);
     assert(audio_stream_inventory_upsert(
-               NULL, 1, "org.example.App", "Application", "binary", "node") == -1);
+               NULL, 1, 2, "org.example.App", "Application", "binary", "node") == -1);
     assert(audio_stream_inventory_remove(NULL, 1) == 0);
     audio_stream_inventory_clear(NULL);
 }
@@ -38,6 +38,7 @@ static void test_upsert_adds_and_updates_owned_strings(void) {
     assert(audio_stream_inventory_upsert(
                &inventory,
                42,
+               2,
                application_id,
                application_name,
                process_binary,
@@ -51,6 +52,7 @@ static void test_upsert_adds_and_updates_owned_strings(void) {
 
     const audio_stream_t *stream = audio_stream_inventory_find(&inventory, 42);
     assert(stream != NULL);
+    assert(stream->channel_count == 2);
     assert(strcmp(stream->application_id, "org.mozilla.firefox") == 0);
     assert(strcmp(stream->application_name, "Firefox") == 0);
     assert(strcmp(stream->process_binary, "firefox") == 0);
@@ -59,6 +61,7 @@ static void test_upsert_adds_and_updates_owned_strings(void) {
     assert(audio_stream_inventory_upsert(
                &inventory,
                42,
+               6,
                "com.discordapp.Discord",
                "Discord",
                "Discord",
@@ -67,21 +70,31 @@ static void test_upsert_adds_and_updates_owned_strings(void) {
 
     stream = audio_stream_inventory_find(&inventory, 42);
     assert(stream != NULL);
+    assert(stream->channel_count == 6);
     assert(strcmp(stream->application_id, "com.discordapp.Discord") == 0);
     assert(strcmp(stream->application_name, "Discord") == 0);
     assert(strcmp(stream->process_binary, "Discord") == 0);
     assert(strcmp(stream->node_name, "discord-node") == 0);
 
     assert(audio_stream_inventory_upsert(
-               &inventory, 42, NULL, NULL, "discord-bin", NULL) == 0);
+               &inventory, 42, 1, NULL, NULL, "discord-bin", NULL) == 0);
     assert(inventory.count == 1);
 
     stream = audio_stream_inventory_find(&inventory, 42);
     assert(stream != NULL);
+    assert(stream->channel_count == 1);
     assert(stream->application_id == NULL);
     assert(stream->application_name == NULL);
     assert(strcmp(stream->process_binary, "discord-bin") == 0);
     assert(stream->node_name == NULL);
+
+    assert(audio_stream_inventory_upsert(
+               &inventory, 42, 0, "invalid", NULL, NULL, NULL) == -1);
+    stream = audio_stream_inventory_find(&inventory, 42);
+    assert(stream != NULL);
+    assert(stream->channel_count == 1);
+    assert(stream->application_id == NULL);
+    assert(strcmp(stream->process_binary, "discord-bin") == 0);
 
     audio_stream_inventory_clear(&inventory);
 }
@@ -92,10 +105,11 @@ static void test_null_properties_are_supported(void) {
     audio_stream_inventory_init(&inventory);
 
     assert(audio_stream_inventory_upsert(
-               &inventory, 7, NULL, NULL, NULL, NULL) == 0);
+               &inventory, 7, 1, NULL, NULL, NULL, NULL) == 0);
 
     const audio_stream_t *stream = audio_stream_inventory_find(&inventory, 7);
     assert(stream != NULL);
+    assert(stream->channel_count == 1);
     assert(stream->application_id == NULL);
     assert(stream->application_name == NULL);
     assert(stream->process_binary == NULL);
@@ -104,12 +118,14 @@ static void test_null_properties_are_supported(void) {
     assert(audio_stream_inventory_upsert(
                &inventory,
                7,
+               2,
                "org.example.Player",
                "Music Player",
                NULL,
                "music-node") == 0);
     stream = audio_stream_inventory_find(&inventory, 7);
     assert(stream != NULL);
+    assert(stream->channel_count == 2);
     assert(strcmp(stream->application_id, "org.example.Player") == 0);
     assert(strcmp(stream->application_name, "Music Player") == 0);
     assert(stream->process_binary == NULL);
@@ -127,6 +143,7 @@ static void test_inventory_grows(void) {
         assert(audio_stream_inventory_upsert(
                    &inventory,
                    index,
+                   (index % 8) + 1,
                    "org.example.Test",
                    "Test application",
                    "test-binary",
@@ -136,7 +153,11 @@ static void test_inventory_grows(void) {
     assert(inventory.count == 20);
     assert(inventory.capacity >= inventory.count);
     for (uint32_t index = 0; index < 20; index++) {
-        assert(audio_stream_inventory_find(&inventory, index) != NULL);
+        const audio_stream_t *stream = audio_stream_inventory_find(
+            &inventory,
+            index);
+        assert(stream != NULL);
+        assert(stream->channel_count == (index % 8) + 1);
     }
 
     audio_stream_inventory_clear(&inventory);
@@ -147,21 +168,23 @@ static void test_remove_releases_entry_and_preserves_others(void) {
 
     audio_stream_inventory_init(&inventory);
     assert(audio_stream_inventory_upsert(
-               &inventory, 10, "id.one", "One", "one", "node-one") == 0);
+               &inventory, 10, 1, "id.one", "One", "one", "node-one") == 0);
     assert(audio_stream_inventory_upsert(
-               &inventory, 20, "id.two", "Two", "two", "node-two") == 0);
+               &inventory, 20, 2, "id.two", "Two", "two", "node-two") == 0);
     assert(audio_stream_inventory_upsert(
-               &inventory, 30, "id.three", "Three", "three", "node-three") == 0);
+               &inventory, 30, 6, "id.three", "Three", "three", "node-three") == 0);
 
     assert(audio_stream_inventory_remove(&inventory, 20) == 1);
     assert(inventory.count == 2);
     const audio_stream_t *first = audio_stream_inventory_find(&inventory, 10);
     assert(first != NULL);
+    assert(first->channel_count == 1);
     assert(strcmp(first->application_id, "id.one") == 0);
     assert(strcmp(first->node_name, "node-one") == 0);
     assert(audio_stream_inventory_find(&inventory, 20) == NULL);
     const audio_stream_t *third = audio_stream_inventory_find(&inventory, 30);
     assert(third != NULL);
+    assert(third->channel_count == 6);
     assert(strcmp(third->application_id, "id.three") == 0);
     assert(strcmp(third->node_name, "node-three") == 0);
 
@@ -178,6 +201,7 @@ static void test_clear_resets_inventory(void) {
     assert(audio_stream_inventory_upsert(
                &inventory,
                5,
+               2,
                "org.example.Cleanup",
                "Cleanup test",
                "cleanup-test",

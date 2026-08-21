@@ -14,6 +14,7 @@ static void add_stream(audio_stream_inventory_t *streams,
     assert(audio_stream_inventory_upsert(
                streams,
                index,
+               2,
                application_id,
                application_name,
                process_binary,

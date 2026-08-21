@@ -8,6 +8,7 @@
 
 int pulse_stream_lifecycle_record(audio_stream_inventory_t *inventory,
                                   uint32_t index,
+                                  unsigned int channel_count,
                                   const pa_proplist *properties);
 
 #endif

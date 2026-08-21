@@ -1,8 +1,11 @@
 #include <pulse/pulseaudio.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <math.h>  // Added for log10 function
 #include "mixer.h"
+#include "chatmix_volume.h"
+#include "classified_volume_routing.h"
+#include "sink_input_request_state.h"
 #include "pulse_stream_lifecycle.h"
 #include "../active_application_inventory.h"
 #include "../application_classifier.h"
@@ -11,11 +14,21 @@
 
 static pa_context *context = NULL;
 static pa_mainloop *mainloop = NULL;
-static float last_chatmix_normalized = 0.5f; // default balanced
+static chatmix_volume_targets_t last_chatmix_targets;
 static int has_valid_chatmix = 0;
-static int application_inventory_ready = 0;
 static audio_stream_inventory_t stream_inventory;
 static active_application_inventory_t application_inventory;
+static sink_input_request_tracker_t sink_input_request_tracker;
+static derived_inventory_state_t application_inventory_state;
+
+struct sink_input_info_request {
+    sink_input_request_token_t token;
+    pa_operation *operation;
+    int result_received;
+    struct sink_input_info_request *next;
+};
+
+static struct sink_input_info_request *pending_sink_input_requests = NULL;
 
 struct snapshot_state {
     int failed;
@@ -23,11 +36,9 @@ struct snapshot_state {
 
 // Forward declarations for helpers used before their definitions
 static int wait_for_operation(pa_operation *op);
-static float linear_to_logarithmic(float linear);
-static void apply_current_mix_to_sink_input(pa_context *c, const pa_sink_input_info *i);
+static void reap_sink_input_requests(void);
 static void subscribe_callback(pa_context *c, pa_subscription_event_type_t t, uint32_t idx, void *userdata);
-static void sink_input_new_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud);
-static void sink_input_change_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud);
+static void sink_input_event_info_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud);
 static void sink_input_snapshot_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud);
 
 static void context_state_callback(pa_context *c, void *userdata) {
@@ -48,10 +59,12 @@ static void context_state_callback(pa_context *c, void *userdata) {
 
 static int record_sink_input(const pa_sink_input_info *info) {
     if (!info) return -1;
+    if (!pa_channels_valid(info->sample_spec.channels)) return -1;
 
     return pulse_stream_lifecycle_record(
         &stream_inventory,
         info->index,
+        info->sample_spec.channels,
         info->proplist);
 }
 
@@ -61,80 +74,193 @@ static void subscribe_success_callback(pa_context *c, int success, void *userdat
     *subscription_succeeded = success;
 }
 
-static void apply_current_mix_to_sink_input(pa_context *c, const pa_sink_input_info *i) {
-    if (!i) return;
+static const char *application_group_name(application_group_t group) {
+    return group == APPLICATION_GROUP_CHAT ? "Chat" : "Game";
+}
 
-    const char *app_name = pa_proplist_gets(i->proplist, "application.name");
-    const char *binary = pa_proplist_gets(i->proplist, "application.process.binary");
+static void sink_input_volume_success_callback(pa_context *c,
+                                               int success,
+                                               void *userdata) {
+    (void)userdata;
+    if (success) return;
 
-    // Determine if this sink input matches any configured app and whether it's chat or game
-    for (int cfgIndex = 0; cfgIndex < config.count; cfgIndex++) {
-        const char *pattern = config.apps[cfgIndex].name;
-        int is_chat = config.apps[cfgIndex].is_chat;
+    fprintf(stderr,
+            "PulseAudio rejected a submitted sink-input volume: %s\n",
+            pa_strerror(pa_context_errno(c)));
+}
 
-        int matches = 0;
-        if (app_name && pattern_matches_text(pattern, app_name)) matches = 1;
-        if (!matches && binary && pattern_matches_text(pattern, binary)) matches = 1;
-        if (!matches) continue;
+static int set_sink_input_volume_target(pa_context *c,
+                                        uint32_t stream_index,
+                                        unsigned int channel_count,
+                                        pa_volume_t pulse_volume) {
+    if (!c || channel_count == 0 || channel_count > PA_CHANNELS_MAX) {
+        fprintf(stderr,
+                "Failed to submit PulseAudio stream %u volume\n",
+                stream_index);
+        return -1;
+    }
 
-        float game_volume = 1.0f - last_chatmix_normalized;
-        float chat_volume = last_chatmix_normalized;
-        float linear_volume = is_chat ? chat_volume : game_volume;
+    pa_cvolume cvolume;
+    pa_cvolume_init(&cvolume);
+    pa_cvolume_set(&cvolume, channel_count, pulse_volume);
 
-        float log_volume = linear_to_logarithmic(linear_volume);
-        pa_volume_t vol = (pa_volume_t)(log_volume * PA_VOLUME_NORM);
-        pa_cvolume cvolume;
-        pa_cvolume_init(&cvolume);
-        pa_cvolume_set(&cvolume, i->volume.channels, vol);
-        pa_context_set_sink_input_volume(c, i->index, &cvolume, NULL, NULL);
-        printf("\nAuto-applied current mix to %s (%s)",
-               app_name ? app_name : (binary ? binary : "unknown"),
-               is_chat ? "Chat" : "Game");
-        break;
+    pa_operation *operation = pa_context_set_sink_input_volume(
+        c,
+        stream_index,
+        &cvolume,
+        sink_input_volume_success_callback,
+        NULL);
+    if (!operation) {
+        fprintf(stderr,
+                "Failed to submit PulseAudio stream %u volume: %s\n",
+                stream_index,
+                pa_strerror(pa_context_errno(c)));
+        return -1;
+    }
+
+    pa_operation_unref(operation);
+    return 0;
+}
+
+static void apply_classified_volume_plan(
+    pa_context *c,
+    const classified_volume_plan_t *plan,
+    const char *action) {
+    for (size_t i = 0; i < plan->count; i++) {
+        const classified_volume_assignment_t *assignment =
+            &plan->assignments[i];
+        if (set_sink_input_volume_target(
+                c,
+                assignment->stream_index,
+                assignment->channel_count,
+                assignment->pulse_volume) == 0) {
+            printf("\n%s PulseAudio stream %u (%s)",
+                   action,
+                   assignment->stream_index,
+                   application_group_name(assignment->group));
+        }
     }
 }
 
-static void sink_input_new_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud) {
-    (void)ud;
-    if (eol < 0) {
-        fprintf(stderr, "Failed to read new PulseAudio stream information\n");
+static void route_all_classified_applications(
+    pa_context *c,
+    const chatmix_volume_targets_t *targets) {
+    classified_volume_plan_t plan;
+    classified_volume_plan_init(&plan);
+
+    if (classified_volume_plan_build_all(
+            &plan,
+            &application_inventory,
+            &stream_inventory,
+            &config,
+            targets,
+            derived_inventory_state_is_available(
+                &application_inventory_state)) != 0) {
+        fprintf(stderr, "Failed to plan classified application volumes\n");
+        classified_volume_plan_clear(&plan);
         return;
     }
-    if (eol > 0 || !info) return;
 
-    if (record_sink_input(info) != 0) {
-        fprintf(stderr, "Failed to store PulseAudio stream %u\n", info->index);
-    } else if (application_inventory_ready &&
-               active_application_inventory_rebuild(
-                   &application_inventory,
-                   &stream_inventory) != 0) {
-        fprintf(stderr,
-                "Failed to rebuild active applications after new stream %u\n",
-                info->index);
-    }
-    if (has_valid_chatmix) {
-        apply_current_mix_to_sink_input(ctx, info);
-    }
+    apply_classified_volume_plan(c, &plan, "Submitted volume for");
+    classified_volume_plan_clear(&plan);
 }
 
-static void sink_input_change_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud) {
-    (void)ctx;
-    (void)ud;
-    if (eol < 0) {
-        fprintf(stderr, "Failed to read changed PulseAudio stream information\n");
+static void route_classified_application_for_new_stream(
+    pa_context *c,
+    uint32_t stream_index) {
+    classified_volume_plan_t plan;
+    classified_volume_plan_init(&plan);
+
+    if (classified_volume_plan_build_for_stream(
+            &plan,
+            &application_inventory,
+            &stream_inventory,
+            &config,
+            &last_chatmix_targets,
+            derived_inventory_state_is_available(
+                &application_inventory_state),
+            stream_index) != 0) {
+        fprintf(stderr,
+                "Failed to plan classified volume for new stream %u\n",
+                stream_index);
+        classified_volume_plan_clear(&plan);
         return;
     }
-    if (eol > 0 || !info) return;
 
-    if (record_sink_input(info) != 0) {
-        fprintf(stderr, "Failed to update PulseAudio stream %u\n", info->index);
-    } else if (application_inventory_ready &&
-               active_application_inventory_rebuild(
-                   &application_inventory,
-                   &stream_inventory) != 0) {
+    apply_classified_volume_plan(c, &plan, "Submitted current mix for");
+    classified_volume_plan_clear(&plan);
+}
+
+static int rebuild_active_applications_after_event(
+    const char *event_description,
+    uint32_t index) {
+    if (!derived_inventory_state_can_rebuild(&application_inventory_state)) {
+        return -1;
+    }
+
+    int succeeded = active_application_inventory_rebuild(
+        &application_inventory,
+        &stream_inventory) == 0;
+    derived_inventory_state_set_rebuild_result(
+        &application_inventory_state,
+        succeeded);
+    if (!succeeded) {
         fprintf(stderr,
-                "Failed to rebuild active applications after changed stream %u\n",
+                "Failed to rebuild active applications after %s stream %u\n",
+                event_description,
+                index);
+        return -1;
+    }
+
+    return 0;
+}
+
+static void sink_input_event_info_cb(
+    pa_context *ctx,
+    const pa_sink_input_info *info,
+    int eol,
+    void *ud) {
+    struct sink_input_info_request *request = ud;
+    if (!request ||
+        !sink_input_request_tracker_is_current(
+            &sink_input_request_tracker,
+            &request->token)) {
+        return;
+    }
+
+    if (eol < 0) {
+        fprintf(stderr,
+                "Failed to read %s PulseAudio stream information\n",
+                request->token.intent == SINK_INPUT_REQUEST_NEW
+                    ? "new"
+                    : "changed");
+        return;
+    }
+    if (eol > 0 || !info || request->result_received) return;
+    if (info->index != request->token.index) return;
+
+    request->result_received = 1;
+    int rebuild_succeeded = 0;
+    if (record_sink_input(info) != 0) {
+        fprintf(stderr,
+                "Failed to %s PulseAudio stream %u\n",
+                request->token.intent == SINK_INPUT_REQUEST_NEW
+                    ? "store"
+                    : "update",
                 info->index);
+    } else {
+        rebuild_succeeded = rebuild_active_applications_after_event(
+            request->token.intent == SINK_INPUT_REQUEST_NEW
+                ? "new"
+                : "changed",
+            info->index) == 0;
+    }
+
+    if (request->token.intent == SINK_INPUT_REQUEST_NEW &&
+        rebuild_succeeded &&
+        derived_inventory_state_is_available(&application_inventory_state) &&
+        has_valid_chatmix) {
+        route_classified_application_for_new_stream(ctx, info->index);
     }
 }
 
@@ -160,39 +286,107 @@ static void subscribe_callback(pa_context *c, pa_subscription_event_type_t t, ui
 
     pa_subscription_event_type_t type = t & PA_SUBSCRIPTION_EVENT_TYPE_MASK;
     if (type == PA_SUBSCRIPTION_EVENT_REMOVE) {
-        audio_stream_inventory_remove(&stream_inventory, idx);
-        if (application_inventory_ready &&
-            active_application_inventory_rebuild(
-                &application_inventory,
-                &stream_inventory) != 0) {
-            fprintf(stderr,
-                    "Failed to rebuild active applications after removed stream %u\n",
-                    idx);
+        sink_input_request_tracker_invalidate(
+            &sink_input_request_tracker,
+            idx);
+        for (struct sink_input_info_request *request =
+                 pending_sink_input_requests;
+             request;
+             request = request->next) {
+            if (request->token.index == idx &&
+                pa_operation_get_state(request->operation) ==
+                    PA_OPERATION_RUNNING) {
+                pa_operation_cancel(request->operation);
+            }
         }
+
+        audio_stream_inventory_remove(&stream_inventory, idx);
+        rebuild_active_applications_after_event("removed", idx);
         return;
     }
 
-    pa_sink_input_info_cb_t callback = NULL;
+    sink_input_request_intent_t intent;
     if (type == PA_SUBSCRIPTION_EVENT_NEW) {
-        callback = sink_input_new_cb;
+        intent = SINK_INPUT_REQUEST_NEW;
     } else if (type == PA_SUBSCRIPTION_EVENT_CHANGE) {
-        callback = sink_input_change_cb;
+        intent = SINK_INPUT_REQUEST_CHANGE;
+    } else {
+        return;
     }
 
-    if (callback) {
-        pa_operation *op = pa_context_get_sink_input_info(c, idx, callback, NULL);
-        if (!op) {
-            fprintf(stderr, "Failed to request PulseAudio stream %u\n", idx);
-            return;
+    struct sink_input_info_request *request = calloc(1, sizeof(*request));
+    if (!request ||
+        sink_input_request_tracker_begin(
+            &sink_input_request_tracker,
+            idx,
+            intent,
+            &request->token) != 0) {
+        free(request);
+        fprintf(stderr, "Failed to track PulseAudio stream request %u\n", idx);
+        return;
+    }
+
+    request->next = pending_sink_input_requests;
+    pending_sink_input_requests = request;
+    request->operation = pa_context_get_sink_input_info(
+        c,
+        idx,
+        sink_input_event_info_cb,
+        request);
+    if (!request->operation) {
+        pending_sink_input_requests = request->next;
+        sink_input_request_tracker_finish(
+            &sink_input_request_tracker,
+            &request->token);
+        free(request);
+        fprintf(stderr, "Failed to request PulseAudio stream %u\n", idx);
+    }
+}
+
+static void reap_sink_input_requests(void) {
+    struct sink_input_info_request **position =
+        &pending_sink_input_requests;
+    while (*position) {
+        struct sink_input_info_request *request = *position;
+        if (pa_operation_get_state(request->operation) ==
+            PA_OPERATION_RUNNING) {
+            position = &request->next;
+            continue;
         }
-        pa_operation_unref(op);
+
+        *position = request->next;
+        sink_input_request_tracker_finish(
+            &sink_input_request_tracker,
+            &request->token);
+        pa_operation_unref(request->operation);
+        free(request);
+    }
+}
+
+static void cancel_and_release_sink_input_requests(void) {
+    struct sink_input_info_request *request = pending_sink_input_requests;
+    pending_sink_input_requests = NULL;
+    while (request) {
+        struct sink_input_info_request *next = request->next;
+        if (pa_operation_get_state(request->operation) ==
+            PA_OPERATION_RUNNING) {
+            pa_operation_cancel(request->operation);
+        }
+        sink_input_request_tracker_finish(
+            &sink_input_request_tracker,
+            &request->token);
+        pa_operation_unref(request->operation);
+        free(request);
+        request = next;
     }
 }
 
 int initialize_audio_server(void) {
     int ready = 0;
     has_valid_chatmix = 0;
-    application_inventory_ready = 0;
+    pending_sink_input_requests = NULL;
+    sink_input_request_tracker_init(&sink_input_request_tracker);
+    derived_inventory_state_init(&application_inventory_state);
     audio_stream_inventory_init(&stream_inventory);
     active_application_inventory_init(&application_inventory);
     mainloop = pa_mainloop_new();
@@ -253,14 +447,19 @@ int initialize_audio_server(void) {
         goto fail;
     }
 
-    if (active_application_inventory_rebuild(
-            &application_inventory,
-            &stream_inventory) != 0) {
+    derived_inventory_state_mark_initial_snapshot_complete(
+        &application_inventory_state);
+    int initial_rebuild_succeeded = active_application_inventory_rebuild(
+        &application_inventory,
+        &stream_inventory) == 0;
+    derived_inventory_state_set_rebuild_result(
+        &application_inventory_state,
+        initial_rebuild_succeeded);
+    if (!initial_rebuild_succeeded) {
         fprintf(stderr,
                 "Failed to build active application inventory from PulseAudio snapshot\n");
         goto fail;
     }
-    application_inventory_ready = 1;
 
     return 0;
 
@@ -270,10 +469,13 @@ fail:
 }
 
 void cleanup_audio_server(void) {
-    application_inventory_ready = 0;
+    derived_inventory_state_init(&application_inventory_state);
     if (context) {
         pa_context_set_state_callback(context, NULL, NULL);
         pa_context_set_subscribe_callback(context, NULL, NULL);
+    }
+    cancel_and_release_sink_input_requests();
+    if (context) {
         pa_context_disconnect(context);
         pa_context_unref(context);
         context = NULL;
@@ -282,6 +484,7 @@ void cleanup_audio_server(void) {
         pa_mainloop_free(mainloop);
         mainloop = NULL;
     }
+    sink_input_request_tracker_clear(&sink_input_request_tracker);
     active_application_inventory_clear(&application_inventory);
     audio_stream_inventory_clear(&stream_inventory);
     has_valid_chatmix = 0;
@@ -292,6 +495,7 @@ void process_audio_events(void) {
     // Non-blocking iterate to process pending context callbacks
     int retval = 0;
     pa_mainloop_iterate(mainloop, 0, &retval);
+    reap_sink_input_requests();
 }
 
 size_t get_active_audio_stream_count(void) {
@@ -312,11 +516,13 @@ int get_active_audio_stream(size_t position, audio_stream_view_t *stream) {
 }
 
 size_t get_active_application_count(void) {
-    return application_inventory_ready ? application_inventory.count : 0;
+    return derived_inventory_state_is_available(&application_inventory_state)
+        ? application_inventory.count
+        : 0;
 }
 
 int get_active_application(size_t position, active_application_view_t *view) {
-    if (!application_inventory_ready ||
+    if (!derived_inventory_state_is_available(&application_inventory_state) ||
         !view ||
         position >= application_inventory.count) {
         return -1;
@@ -339,64 +545,16 @@ int get_active_application(size_t position, active_application_view_t *view) {
     return 0;
 }
 
-// Structure to store app info
-typedef struct {
-    uint32_t index;
-    char *name;
-    pa_cvolume volume;
-} app_info_t;
-
-struct volume_control {
-    const char* app_name;
-    float target_volume;
-    int found;  // Flag to track if we found the app
-};
-
-// Convert linear volume (0.0-1.0) to logarithmic scale for better perception
-static float linear_to_logarithmic(float linear) {
-    // Avoid log(0) which is -infinity
-    if (linear < 0.01f) return 0.0f;
-    
-    // Calculate logarithmic volume using the formula:
-    // volume_log = (10^(volume_linear) - 1) / 9
-    // This creates a logarithmic curve from 0.0 to 1.0
-    return (powf(10.0f, linear) - 1.0f) / 9.0f;
-}
-
-static void sink_input_info_cb(pa_context *c, const pa_sink_input_info *i, int eol, void *userdata) {
-    if (eol || !i || !userdata) return;
-    
-    struct volume_control *vc = (struct volume_control*)userdata;
-    const char *app_name = pa_proplist_gets(i->proplist, "application.name");
-    const char *binary = pa_proplist_gets(i->proplist, "application.process.binary");
-    
-    // Match either application name or binary name using pattern matching
-    if ((app_name && pattern_matches_text(vc->app_name, app_name)) ||
-        (binary && pattern_matches_text(vc->app_name, binary))) {
-        
-        int current_vol = (int)(pa_cvolume_avg(&i->volume) * 100.0f / PA_VOLUME_NORM);
-        int target_vol = (int)(vc->target_volume * 100);
-        
-        printf("\nAdjusting %s volume: %d%% -> %d%%", app_name, current_vol, target_vol);
-        
-        // Apply logarithmic scaling to the volume
-        float log_volume = linear_to_logarithmic(vc->target_volume);
-        pa_volume_t vol = (pa_volume_t)(log_volume * PA_VOLUME_NORM);
-        pa_cvolume cvolume;
-        pa_cvolume_init(&cvolume);
-        pa_cvolume_set(&cvolume, i->volume.channels, vol);
-        pa_context_set_sink_input_volume(c, i->index, &cvolume, NULL, NULL);
-        vc->found = 1;
-    }
-}
-
-// Add this helper function
 static int wait_for_operation(pa_operation *op) {
     if (!op) return -1;
 
     while (op && pa_operation_get_state(op) == PA_OPERATION_RUNNING) {
-        if (pa_mainloop_iterate(mainloop, 1, NULL) < 0) return -1;
+        int iterate_result = pa_mainloop_iterate(mainloop, 1, NULL);
+        reap_sink_input_requests();
+        if (iterate_result < 0) return -1;
     }
+
+    reap_sink_input_requests();
 
     return 0;
 }
@@ -420,51 +578,22 @@ static void list_apps_callback(pa_context *c, const pa_sink_input_info *i, int e
     }
 }
 
-int set_application_volume(const char* app_name, float volume) {
-    if (!context || volume < 0.0f || volume > 1.0f) return -1;
-
-    struct volume_control vc = {
-        .app_name = app_name,
-        .target_volume = volume,
-        .found = 0
-    };
-
-    pa_operation *op = pa_context_get_sink_input_info_list(context, 
-                                                          sink_input_info_cb, 
-                                                          &vc);
-    if (op) {
-        wait_for_operation(op);
-        pa_operation_unref(op);
-        return vc.found ? 0 : -1;
-    }
-    return -1;
-}
-
 void adjust_volume_based_on_chatmix(float chatmix_value) {
-    float normalized = chatmix_value / 128.0f;
-    float game_volume = 1.0f - normalized;
-    float chat_volume = normalized;
+    chatmix_volume_targets_t targets;
+    if (chatmix_volume_targets_calculate(chatmix_value, &targets) != 0) {
+        fprintf(stderr, "Invalid ChatMix value: %.0f\n", chatmix_value);
+        return;
+    }
 
-    last_chatmix_normalized = normalized;
+    last_chatmix_targets = targets;
     has_valid_chatmix = 1;
 
-    // Calculate logarithmic equivalents for display purposes
-    float log_game_volume = linear_to_logarithmic(game_volume);
-    float log_chat_volume = linear_to_logarithmic(chat_volume);
-
-    printf("\nChatmix position: %.0f%%", normalized * 100);
+    printf("\nChatmix position: %.0f%%", targets.normalized * 100);
     printf("\nTarget volumes - Game: %.0f%% (%.0f%% logarithmic), Chat: %.0f%% (%.0f%% logarithmic)", 
-           game_volume * 100, log_game_volume * 100, 
-           chat_volume * 100, log_chat_volume * 100);
+           targets.game.linear * 100, targets.game.logarithmic * 100,
+           targets.chat.linear * 100, targets.chat.logarithmic * 100);
     
-    // Update all configured applications
-    for (int i = 0; i < config.count; i++) {
-        float volume = config.apps[i].is_chat ? chat_volume : game_volume;
-        if (set_application_volume(config.apps[i].name, volume) == 0) {
-            printf("\nUpdated %s (%s)", config.apps[i].name, 
-                   config.apps[i].is_chat ? "Chat" : "Game");
-        }
-    }
+    route_all_classified_applications(context, &targets);
     printf("\n");
 }
 
