@@ -14,7 +14,11 @@ typedef struct {
     int count;
 } config_t;
 
-void load_config(void);
+/*
+ * Loads the user configuration. A missing file is a valid empty
+ * configuration. Returns 0 on success and -1 on another file I/O error.
+ */
+int load_config(void);
 void save_config(void);
 int add_application(const char* name, int is_chat);
 int remove_application(const char* name);

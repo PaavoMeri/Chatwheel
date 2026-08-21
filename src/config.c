@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +21,7 @@ static const char* get_config_path(void) {
     return path;
 }
 
-void load_config(void) {
+int load_config(void) {
     config.count = 0;  // Reset config before loading
     const char* config_path = get_config_path();
     FILE *f = fopen(config_path, "r");
@@ -28,7 +29,7 @@ void load_config(void) {
     // Try system config if user config doesn't exist
     if (!f) {
         // No default config is created
-        return;
+        return errno == ENOENT ? 0 : -1;
     }
 
     char line[512];
@@ -39,7 +40,11 @@ void load_config(void) {
             add_application(name, is_chat);
         }
     }
-    fclose(f);
+    if (ferror(f)) {
+        fclose(f);
+        return -1;
+    }
+    return fclose(f) == 0 ? 0 : -1;
 }
 
 void save_config(void) {

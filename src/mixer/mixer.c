@@ -5,6 +5,7 @@
 #include "mixer.h"
 #include "pulse_stream_lifecycle.h"
 #include "../active_application_inventory.h"
+#include "../application_classifier.h"
 #include "../config.h"
 #include "../pattern_matcher.h"
 
@@ -323,11 +324,18 @@ int get_active_application(size_t position, active_application_view_t *view) {
 
     const active_application_t *application =
         &application_inventory.applications[position];
+    application_classification_t classification =
+        application_classifier_classify(
+            application,
+            &stream_inventory,
+            &config);
     view->identity_property = application->identity_property;
     view->identity_value = application->identity_value;
     view->display_name = application->display_name;
     view->stream_indexes = application->stream_indexes;
     view->stream_count = application->stream_count;
+    view->group = classification.group;
+    view->matched_config_index = classification.matched_config_index;
     return 0;
 }
 

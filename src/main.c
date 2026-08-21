@@ -78,6 +78,19 @@ static const char *identity_property_label(
     }
 }
 
+static const char *application_group_label(application_group_t group) {
+    switch (group) {
+        case APPLICATION_GROUP_UNASSIGNED:
+            return "Unassigned";
+        case APPLICATION_GROUP_GAME:
+            return "Game";
+        case APPLICATION_GROUP_CHAT:
+            return "Chat";
+        default:
+            return "Unknown";
+    }
+}
+
 static int print_active_applications(void) {
     size_t application_count = get_active_application_count();
     printf("Active applications (%zu):\n", application_count);
@@ -98,6 +111,34 @@ static int print_active_applications(void) {
                identity_property_label(application.identity_property));
         printf("  identity value: %s\n",
                application.identity_value ? application.identity_value : "(missing)");
+        printf("  classification: %s\n",
+               application_group_label(application.group));
+        if (application.matched_config_index < 0) {
+            printf("  matched config index (zero-based): (none)\n");
+            printf("  matched config pattern: (none)\n");
+            printf("  matched config group: (none)\n");
+        } else {
+            if (config.count < 0 ||
+                config.count > MAX_APPS ||
+                application.matched_config_index >= config.count) {
+                fprintf(stderr,
+                        "Invalid matched config index %d for active application %zu\n",
+                        application.matched_config_index,
+                        position);
+                return -1;
+            }
+
+            const app_config_t *matched_config =
+                &config.apps[application.matched_config_index];
+            printf("  matched config index (zero-based): %d\n",
+                   application.matched_config_index);
+            printf("  matched config pattern: %s\n",
+                   matched_config->name[0] != '\0'
+                       ? matched_config->name
+                       : "(empty)");
+            printf("  matched config group: %s\n",
+                   matched_config->is_chat != 0 ? "Chat" : "Game");
+        }
         printf("  stream count: %zu\n", application.stream_count);
         printf("  stream indexes:");
         if (!application.stream_indexes) {
@@ -178,6 +219,12 @@ int main(int argc, char *argv[]) {
             return result == 0 ? 0 : 1;
         }
         else if (strcmp(argv[1], "--list-active") == 0) {
+            if (load_config() != 0 ||
+                config.count < 0 ||
+                config.count > MAX_APPS) {
+                fprintf(stderr, "Failed to load a valid configuration\n");
+                return 1;
+            }
             if (initialize_audio_server() != 0) {
                 fprintf(stderr, "Failed to initialize audio server\n");
                 return 1;
