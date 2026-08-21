@@ -97,13 +97,17 @@ const audio_stream_t *audio_stream_inventory_find(
 
 int audio_stream_inventory_upsert(audio_stream_inventory_t *inventory,
                                   uint32_t index,
+                                  unsigned int channel_count,
                                   const char *application_id,
                                   const char *application_name,
                                   const char *process_binary,
                                   const char *node_name) {
-    if (!inventory) return -1;
+    if (!inventory || channel_count == 0) return -1;
 
-    audio_stream_t replacement = {.index = index};
+    audio_stream_t replacement = {
+        .index = index,
+        .channel_count = channel_count,
+    };
     if (copy_stream_properties(
             &replacement,
             application_id,

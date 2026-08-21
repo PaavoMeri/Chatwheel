@@ -61,7 +61,6 @@ size_t get_active_application_count(void);
 int get_active_application(size_t position, active_application_view_t *view);
 
 // Volume control functions
-int set_application_volume(const char* app_name, float volume);
 void adjust_volume_based_on_chatmix(float chatmix_value);
 
 // Application listing

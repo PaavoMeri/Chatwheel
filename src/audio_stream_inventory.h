@@ -6,6 +6,7 @@
 
 typedef struct {
     uint32_t index;
+    unsigned int channel_count;
     /* All strings are owned by the containing inventory. */
     char *application_id;
     char *application_name;
@@ -35,12 +36,15 @@ const audio_stream_t *audio_stream_inventory_find(
     uint32_t index);
 
 /*
- * Copies all non-NULL properties into the inventory. Returns 0 on success and
- * -1 for an invalid inventory or allocation failure. On failure, an existing
- * entry with the same index remains unchanged.
+ * Copies channel_count and all non-NULL properties into the inventory.
+ * channel_count must be greater than zero; any server-specific upper bound is
+ * validated by the caller. Returns 0 on success and -1 for invalid arguments
+ * or allocation failure. On failure, an existing entry with the same index
+ * remains unchanged.
  */
 int audio_stream_inventory_upsert(audio_stream_inventory_t *inventory,
                                   uint32_t index,
+                                  unsigned int channel_count,
                                   const char *application_id,
                                   const char *application_name,
                                   const char *process_binary,

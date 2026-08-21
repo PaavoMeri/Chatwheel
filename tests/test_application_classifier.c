@@ -28,6 +28,7 @@ static void fixture_add_stream(classifier_fixture_t *fixture,
     assert(audio_stream_inventory_upsert(
         &fixture->streams,
         index,
+        2,
         application_id,
         application_name,
         process_binary,
@@ -219,6 +220,7 @@ static void test_empty_property_matching(void) {
     assert(audio_stream_inventory_upsert(
         &fixture.streams,
         3,
+        2,
         NULL,
         "",
         NULL,
@@ -240,6 +242,7 @@ static void test_empty_property_matching(void) {
     assert(audio_stream_inventory_upsert(
         &fixture.streams,
         3,
+        2,
         NULL,
         NULL,
         NULL,

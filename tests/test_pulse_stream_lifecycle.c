@@ -50,11 +50,12 @@ static void test_initial_snapshot_copies_pulse_properties(void) {
         "Firefox",
         "firefox",
         "Firefox");
-    assert(pulse_stream_lifecycle_record(&inventory, 42, properties) == 0);
+    assert(pulse_stream_lifecycle_record(&inventory, 42, 2, properties) == 0);
     pa_proplist_free(properties);
 
     const audio_stream_t *stream = audio_stream_inventory_find(&inventory, 42);
     assert(stream != NULL);
+    assert(stream->channel_count == 2);
     assert(strcmp(stream->application_id, "org.mozilla.firefox") == 0);
     assert(strcmp(stream->application_name, "Firefox") == 0);
     assert(strcmp(stream->process_binary, "firefox") == 0);
@@ -73,7 +74,7 @@ static void test_snapshot_and_events_upsert_the_same_stream(void) {
         "Discord",
         "discord-node");
     assert(pulse_stream_lifecycle_record(
-               &inventory, 10, snapshot_properties) == 0);
+               &inventory, 10, 2, snapshot_properties) == 0);
     pa_proplist_free(snapshot_properties);
 
     pa_proplist *new_properties = create_properties(
@@ -81,7 +82,8 @@ static void test_snapshot_and_events_upsert_the_same_stream(void) {
         "Discord",
         "Discord",
         "discord-node");
-    assert(pulse_stream_lifecycle_record(&inventory, 10, new_properties) == 0);
+    assert(pulse_stream_lifecycle_record(
+               &inventory, 10, 1, new_properties) == 0);
     pa_proplist_free(new_properties);
     assert(inventory.count == 1);
 
@@ -91,11 +93,12 @@ static void test_snapshot_and_events_upsert_the_same_stream(void) {
         "discord",
         "discord-voice-node");
     assert(pulse_stream_lifecycle_record(
-               &inventory, 10, changed_properties) == 0);
+               &inventory, 10, 6, changed_properties) == 0);
     pa_proplist_free(changed_properties);
 
     const audio_stream_t *stream = audio_stream_inventory_find(&inventory, 10);
     assert(stream != NULL);
+    assert(stream->channel_count == 6);
     assert(strcmp(stream->application_id, "com.discordapp.Discord.canary") == 0);
     assert(strcmp(stream->application_name, "Discord Voice") == 0);
     assert(strcmp(stream->process_binary, "discord") == 0);
@@ -117,7 +120,7 @@ static void test_quickly_removed_unassigned_stream_does_not_remain(void) {
         "Unconfigured Player",
         NULL,
         "unconfigured-node");
-    assert(pulse_stream_lifecycle_record(&inventory, 77, properties) == 0);
+    assert(pulse_stream_lifecycle_record(&inventory, 77, 2, properties) == 0);
     pa_proplist_free(properties);
     assert(audio_stream_inventory_find(&inventory, 77) != NULL);
 
@@ -133,10 +136,11 @@ static void test_missing_proplist_is_recorded_with_null_properties(void) {
     audio_stream_inventory_t inventory;
     audio_stream_inventory_init(&inventory);
 
-    assert(pulse_stream_lifecycle_record(&inventory, 99, NULL) == 0);
+    assert(pulse_stream_lifecycle_record(&inventory, 99, 1, NULL) == 0);
 
     const audio_stream_t *stream = audio_stream_inventory_find(&inventory, 99);
     assert(stream != NULL);
+    assert(stream->channel_count == 1);
     assert(stream->application_id == NULL);
     assert(stream->application_name == NULL);
     assert(stream->process_binary == NULL);

@@ -2,6 +2,7 @@
 
 int pulse_stream_lifecycle_record(audio_stream_inventory_t *inventory,
                                   uint32_t index,
+                                  unsigned int channel_count,
                                   const pa_proplist *properties) {
     const char *application_id = NULL;
     const char *application_name = NULL;
@@ -20,6 +21,7 @@ int pulse_stream_lifecycle_record(audio_stream_inventory_t *inventory,
     return audio_stream_inventory_upsert(
         inventory,
         index,
+        channel_count,
         application_id,
         application_name,
         process_binary,
