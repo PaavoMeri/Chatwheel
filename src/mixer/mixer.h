@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <pulse/pulseaudio.h> // Include PulseAudio or PipeWire headers as needed
+#include "../application_classifier.h"
 #include "../application_identity.h"
 
 typedef struct {
@@ -20,6 +21,8 @@ typedef struct {
     const char *display_name;
     const uint32_t *stream_indexes;
     size_t stream_count;
+    application_group_t group;
+    int matched_config_index;
 } active_application_view_t;
 
 // Initialize and cleanup
@@ -49,9 +52,10 @@ size_t get_active_application_count(void);
  * the caller, but all pointer fields are borrowed from the private application
  * inventory. The caller must not modify or free borrowed data. Any successful
  * application-inventory rebuild or cleanup_audio_server() invalidates it, so
- * the view must not be retained while audio events are processed. Returns 0 on
- * success and -1 when view is NULL, position is out of bounds, or initial
- * application synchronization is not ready.
+ * the view must not be retained while audio events are processed. Classification
+ * fields are copied by value and describe the configuration loaded when this
+ * function is called. Returns 0 on success and -1 when view is NULL, position
+ * is out of bounds, or initial application synchronization is not ready.
  */
 int get_active_application(size_t position, active_application_view_t *view);
 

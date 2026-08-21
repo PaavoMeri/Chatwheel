@@ -128,7 +128,7 @@ Inspect the logical applications derived from those streams and the stream index
 chatwheel --list-active
 ```
 
-Both commands are diagnostic. `--list-streams` shows individual sink inputs and their raw `application.id`, `application.name`, `application.process.binary`, and `node.name` properties. `--list-active` shows the derived canonical identity, display name, and stream indexes for each logical application. It does not yet show Game, Chat, or Unassigned classification.
+Both commands are read-only diagnostics and do not change stream volumes. `--list-streams` shows individual sink inputs and their raw `application.id`, `application.name`, `application.process.binary`, and `node.name` properties. `--list-active` shows the derived canonical identity, display name, stream indexes, and current Game, Chat, or Unassigned classification from the loaded configuration.
 
 The legacy command below performs a separate, one-time listing:
 
