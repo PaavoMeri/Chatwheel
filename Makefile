@@ -8,6 +8,7 @@ SRCS = src/main.c src/headset/headset.c src/mixer/mixer.c src/config.c \
 	src/active_application_inventory.c \
 	src/application_classifier.c \
 	src/pattern_matcher.c \
+	src/mixer/pulse_event_drain.c \
 	src/mixer/pulse_stream_lifecycle.c \
 	src/mixer/sink_input_request_state.c
 OBJS = $(SRCS:.c=.o)
@@ -21,6 +22,7 @@ APPLICATION_CLASSIFIER_TEST_TARGET = build/test_application_classifier
 CHATMIX_VOLUME_TEST_TARGET = build/test_chatmix_volume
 SINK_INPUT_REQUEST_STATE_TEST_TARGET = build/test_sink_input_request_state
 CLASSIFIED_VOLUME_ROUTING_TEST_TARGET = build/test_classified_volume_routing
+PULSE_EVENT_DRAIN_TEST_TARGET = build/test_pulse_event_drain
 
 $(TARGET): $(OBJS)
 	$(CC) $(OBJS) -o $(TARGET) $(LDFLAGS)
@@ -33,7 +35,7 @@ test: $(TEST_TARGET) $(PULSE_LIFECYCLE_TEST_TARGET) \
 		$(APPLICATION_IDENTITY_TEST_TARGET) $(ACTIVE_APPLICATION_TEST_TARGET) \
 		$(PATTERN_MATCHER_TEST_TARGET) $(APPLICATION_CLASSIFIER_TEST_TARGET) \
 		$(CHATMIX_VOLUME_TEST_TARGET) $(SINK_INPUT_REQUEST_STATE_TEST_TARGET) \
-		$(CLASSIFIED_VOLUME_ROUTING_TEST_TARGET)
+		$(CLASSIFIED_VOLUME_ROUTING_TEST_TARGET) $(PULSE_EVENT_DRAIN_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(PULSE_LIFECYCLE_TEST_TARGET)
 	./$(APPLICATION_IDENTITY_TEST_TARGET)
@@ -43,6 +45,7 @@ test: $(TEST_TARGET) $(PULSE_LIFECYCLE_TEST_TARGET) \
 	./$(CHATMIX_VOLUME_TEST_TARGET)
 	./$(SINK_INPUT_REQUEST_STATE_TEST_TARGET)
 	./$(CLASSIFIED_VOLUME_ROUTING_TEST_TARGET)
+	./$(PULSE_EVENT_DRAIN_TEST_TARGET)
 
 $(TEST_TARGET): tests/test_audio_stream_inventory.c src/audio_stream_inventory.c \
 		src/audio_stream_inventory.h
@@ -137,13 +140,20 @@ $(CLASSIFIED_VOLUME_ROUTING_TEST_TARGET): \
 		src/audio_stream_inventory.c src/pattern_matcher.c \
 		-o $(CLASSIFIED_VOLUME_ROUTING_TEST_TARGET) -lm
 
+$(PULSE_EVENT_DRAIN_TEST_TARGET): tests/test_pulse_event_drain.c \
+		src/mixer/pulse_event_drain.c src/mixer/pulse_event_drain.h
+	mkdir -p build
+	$(CC) -Wall -Wextra -Werror -I src/ \
+		tests/test_pulse_event_drain.c src/mixer/pulse_event_drain.c \
+		-o $(PULSE_EVENT_DRAIN_TEST_TARGET)
+
 .PHONY: clean
 clean:
 	rm -f $(OBJS) $(TARGET) $(TEST_TARGET) $(PULSE_LIFECYCLE_TEST_TARGET) \
 		$(APPLICATION_IDENTITY_TEST_TARGET) $(ACTIVE_APPLICATION_TEST_TARGET) \
 		$(PATTERN_MATCHER_TEST_TARGET) $(APPLICATION_CLASSIFIER_TEST_TARGET) \
 		$(CHATMIX_VOLUME_TEST_TARGET) $(SINK_INPUT_REQUEST_STATE_TEST_TARGET) \
-		$(CLASSIFIED_VOLUME_ROUTING_TEST_TARGET)
+		$(CLASSIFIED_VOLUME_ROUTING_TEST_TARGET) $(PULSE_EVENT_DRAIN_TEST_TARGET)
 
 .PHONY: dirs
 dirs:
