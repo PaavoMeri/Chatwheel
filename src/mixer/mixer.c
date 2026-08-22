@@ -5,6 +5,7 @@
 #include "mixer.h"
 #include "chatmix_volume.h"
 #include "classified_volume_routing.h"
+#include "pulse_event_drain.h"
 #include "sink_input_request_state.h"
 #include "pulse_stream_lifecycle.h"
 #include "../active_application_inventory.h"
@@ -84,9 +85,10 @@ static void sink_input_volume_success_callback(pa_context *c,
     (void)userdata;
     if (success) return;
 
+    int error = pa_context_errno(c);
     fprintf(stderr,
-            "PulseAudio rejected a submitted sink-input volume: %s\n",
-            pa_strerror(pa_context_errno(c)));
+            "PulseAudio sink-input volume acknowledgement failed: %s\n",
+            pa_strerror(error));
 }
 
 static int set_sink_input_volume_target(pa_context *c,
@@ -229,11 +231,13 @@ static void sink_input_event_info_cb(
     }
 
     if (eol < 0) {
+        int error = pa_context_errno(ctx);
         fprintf(stderr,
-                "Failed to read %s PulseAudio stream information\n",
+                "Failed to read %s PulseAudio stream information: %s\n",
                 request->token.intent == SINK_INPUT_REQUEST_NEW
                     ? "new"
-                    : "changed");
+                    : "changed",
+                pa_strerror(error));
         return;
     }
     if (eol > 0 || !info || request->result_received) return;
@@ -490,12 +494,26 @@ void cleanup_audio_server(void) {
     has_valid_chatmix = 0;
 }
 
+static int iterate_audio_mainloop(void *userdata, int block) {
+    return pa_mainloop_iterate(userdata, block, NULL);
+}
+
+static void reap_audio_requests(void *userdata) {
+    (void)userdata;
+    reap_sink_input_requests();
+}
+
 void process_audio_events(void) {
     if (!mainloop) return;
-    // Non-blocking iterate to process pending context callbacks
-    int retval = 0;
-    pa_mainloop_iterate(mainloop, 0, &retval);
-    reap_sink_input_requests();
+
+    pulse_event_drain_result_t result = pulse_event_drain(
+        iterate_audio_mainloop,
+        mainloop,
+        reap_audio_requests,
+        NULL);
+    if (result == PULSE_EVENT_DRAIN_ERROR) {
+        fprintf(stderr, "Failed to process PulseAudio events\n");
+    }
 }
 
 size_t get_active_audio_stream_count(void) {
