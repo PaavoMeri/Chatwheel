@@ -3,7 +3,10 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <time.h>
 #include "headset/headset.h"
+#include "headset/headset_poll.h"
 #include "mixer/mixer.h"
 #include "config.h"
 
@@ -33,6 +36,15 @@ static void print_restart_notice(void) {
 static void handle_signal(int signum) {
     (void)signum;  // Suppress unused parameter warning
     running = 0;
+}
+
+static int monotonic_now_ns(uint64_t *nanoseconds) {
+    struct timespec timestamp;
+
+    if (!nanoseconds || clock_gettime(CLOCK_MONOTONIC, &timestamp) != 0) {
+        return -1;
+    }
+    return headset_monotonic_timespec_ns(&timestamp, nanoseconds) ? 0 : -1;
 }
 
 static int print_active_audio_streams(void) {
@@ -268,6 +280,12 @@ int main(int argc, char *argv[]) {
     }
 
     int prev_chatmix = -1;
+    headset_poll_state_t poll_state;
+    headset_query_log_state_t log_state = {0};
+    int clock_error_reported = 0;
+    int completion_time_missing = 0;
+
+    headset_poll_state_init(&poll_state);
     
     // Set up signal handling
     signal(SIGINT, handle_signal);
@@ -276,19 +294,62 @@ int main(int argc, char *argv[]) {
     printf("Monitoring chatmix value. Press Ctrl+C to exit.\n\n");
     
     while (running) {
-        int chatmix = get_chatmix_value();
-        
-        if (chatmix != prev_chatmix) {
-            printf("\033[2K\r"); // Clear line
-            if (chatmix == -1) {
-                printf("Failed to get chatmix value");
-            } else {
-                // Pass raw chatmix value (0-128) directly
-                adjust_volume_based_on_chatmix(chatmix);
-                printf("Chatmix: %d (%s)", chatmix, get_chatmix_mode(chatmix));
+        uint64_t now_ns;
+
+        if (monotonic_now_ns(&now_ns) != 0) {
+            if (!clock_error_reported) {
+                fprintf(stderr, "Failed to read monotonic clock; headset polling paused\n");
+                clock_error_reported = 1;
             }
-            fflush(stdout);
-            prev_chatmix = chatmix;
+        } else {
+            if (clock_error_reported) {
+                fprintf(stderr, "Monotonic clock recovered; headset polling resumed\n");
+                clock_error_reported = 0;
+                if (completion_time_missing) {
+                    headset_poll_mark_completed(&poll_state, now_ns);
+                    completion_time_missing = 0;
+                }
+            }
+            if (!completion_time_missing &&
+                headset_poll_is_due(&poll_state, now_ns)) {
+                headset_chatmix_result_t result = get_chatmix_value();
+                headset_log_event_t log_event =
+                    headset_query_log_update(&log_state, result.status);
+
+                if (log_event == HEADSET_LOG_ERROR) {
+                    fprintf(stderr,
+                            "HeadsetControl query failed: %s\n",
+                            headset_query_status_name(result.status));
+                } else if (log_event == HEADSET_LOG_RECOVERY) {
+                    fprintf(stderr, "HeadsetControl query recovered\n");
+                }
+
+                if (result.status == HEADSET_QUERY_OK) {
+                    if (headset_chatmix_should_apply(prev_chatmix, result)) {
+                        printf("\033[2K\r"); // Clear line
+                        // Pass raw chatmix value (0-128) directly
+                        adjust_volume_based_on_chatmix(result.chatmix);
+                        printf("Chatmix: %d (%s)",
+                               result.chatmix,
+                               get_chatmix_mode(result.chatmix));
+                        fflush(stdout);
+                    }
+                    prev_chatmix = result.chatmix;
+                } else {
+                    /* Preserve mixer targets; force routing again on recovery. */
+                    prev_chatmix = -1;
+                }
+
+                if (monotonic_now_ns(&now_ns) != 0) {
+                    fprintf(stderr,
+                            "Failed to read monotonic clock after headset query; "
+                            "headset polling paused\n");
+                    clock_error_reported = 1;
+                    completion_time_missing = 1;
+                } else {
+                    headset_poll_mark_completed(&poll_state, now_ns);
+                }
+            }
         }
         
         // Process any pending audio server events (e.g., new app streams)
