@@ -248,6 +248,8 @@ static void sink_input_event_info_cb(
     if (eol > 0 || !info || request->result_received) return;
     if (info->index != request->token.index) return;
 
+    int was_known =
+        audio_stream_inventory_find(&stream_inventory, info->index) != NULL;
     request->result_received = 1;
     int rebuild_succeeded = 0;
     if (record_sink_input(info) != 0) {
@@ -265,10 +267,13 @@ static void sink_input_event_info_cb(
             info->index) == 0;
     }
 
-    if (request->token.intent == SINK_INPUT_REQUEST_NEW &&
-        rebuild_succeeded &&
-        derived_inventory_state_is_available(&application_inventory_state) &&
-        has_valid_chatmix) {
+    if (audio_new_stream_should_route_current_mix(
+            request->token.intent == SINK_INPUT_REQUEST_NEW,
+            was_known,
+            rebuild_succeeded,
+            derived_inventory_state_is_available(
+                &application_inventory_state),
+            has_valid_chatmix)) {
         route_classified_application_for_new_stream(ctx, info->index);
     }
 }
