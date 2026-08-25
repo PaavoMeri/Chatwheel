@@ -4,10 +4,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <time.h>
 #include "headset/headset.h"
 #include "headset/headset_poll.h"
 #include "mixer/mixer.h"
+#include "mixer/pulse_reconnect_state.h"
 #include "config.h"
 
 #define POLL_INTERVAL_MS 100
@@ -45,6 +47,24 @@ static int monotonic_now_ns(uint64_t *nanoseconds) {
         return -1;
     }
     return headset_monotonic_timespec_ns(&timestamp, nanoseconds) ? 0 : -1;
+}
+
+static const char *audio_init_result_name(audio_init_result_t result) {
+    switch (result) {
+        case AUDIO_INIT_TIMEOUT:
+            return "initialization timed out";
+        case AUDIO_INIT_SHUTDOWN:
+            return "shutdown requested";
+        case AUDIO_INIT_FAILED:
+        default:
+            return "initialization failed";
+    }
+}
+
+static const char *audio_event_failure_name(audio_event_status_t status) {
+    return status == AUDIO_EVENTS_MAINLOOP_ERROR
+        ? "mainloop failed"
+        : "connection lost";
 }
 
 static int print_active_audio_streams(void) {
@@ -222,7 +242,7 @@ int main(int argc, char *argv[]) {
             return 0;
         }
         else if (strcmp(argv[1], "--list-streams") == 0) {
-            if (initialize_audio_server() != 0) {
+            if (initialize_audio_server(NULL) != AUDIO_INIT_OK) {
                 fprintf(stderr, "Failed to initialize audio server\n");
                 return 1;
             }
@@ -237,7 +257,7 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "Failed to load a valid configuration\n");
                 return 1;
             }
-            if (initialize_audio_server() != 0) {
+            if (initialize_audio_server(NULL) != AUDIO_INIT_OK) {
                 fprintf(stderr, "Failed to initialize audio server\n");
                 return 1;
             }
@@ -246,7 +266,7 @@ int main(int argc, char *argv[]) {
             return result == 0 ? 0 : 1;
         }
         else if (strcmp(argv[1], "--list-new") == 0) {
-            if (initialize_audio_server() != 0) {
+            if (initialize_audio_server(NULL) != AUDIO_INIT_OK) {
                 fprintf(stderr, "Failed to initialize audio server\n");
                 return 1;
             }
@@ -274,29 +294,43 @@ int main(int argc, char *argv[]) {
     }
 
     load_config();
-    if (initialize_audio_server() != 0) {
-        fprintf(stderr, "Failed to initialize audio server\n");
-        return 1;
-    }
-
     int prev_chatmix = -1;
     headset_poll_state_t poll_state;
     headset_query_log_state_t log_state = {0};
     int clock_error_reported = 0;
     int completion_time_missing = 0;
+    int retry_needs_schedule = 0;
+    const char *audio_failure_reason = NULL;
+    pulse_reconnect_state_t reconnect_state;
+    audio_init_options_t audio_init_options = {
+        .running = &running,
+    };
 
     headset_poll_state_init(&poll_state);
+    pulse_reconnect_state_init(&reconnect_state);
     
     // Set up signal handling
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
+
+    audio_init_result_t initial_audio_result = initialize_audio_server(
+        &audio_init_options);
+    if (initial_audio_result == AUDIO_INIT_SHUTDOWN) {
+        printf("\nExiting...\n");
+        return 0;
+    }
+    if (initial_audio_result != AUDIO_INIT_OK) {
+        retry_needs_schedule = 1;
+        audio_failure_reason = audio_init_result_name(initial_audio_result);
+    }
     
     printf("Monitoring chatmix value. Press Ctrl+C to exit.\n\n");
     
     while (running) {
-        uint64_t now_ns;
+        uint64_t now_ns = 0;
+        int have_monotonic_time = monotonic_now_ns(&now_ns) == 0;
 
-        if (monotonic_now_ns(&now_ns) != 0) {
+        if (!have_monotonic_time) {
             if (!clock_error_reported) {
                 fprintf(stderr, "Failed to read monotonic clock; headset polling paused\n");
                 clock_error_reported = 1;
@@ -310,6 +344,28 @@ int main(int argc, char *argv[]) {
                     completion_time_missing = 0;
                 }
             }
+
+            if (retry_needs_schedule) {
+                uint64_t retry_delay_ns;
+                pulse_reconnect_log_event_t log_event =
+                    pulse_reconnect_state_schedule_retry(
+                        &reconnect_state,
+                        now_ns,
+                        &retry_delay_ns);
+                if (log_event == PULSE_RECONNECT_LOG_OUTAGE) {
+                    fprintf(stderr,
+                            "PulseAudio unavailable: %s\n",
+                            audio_failure_reason
+                                ? audio_failure_reason
+                                : "connection failed");
+                }
+                fprintf(stderr,
+                        "PulseAudio reconnect scheduled in %" PRIu64 " seconds\n",
+                        retry_delay_ns /
+                            PULSE_RECONNECT_NANOSECONDS_PER_SECOND);
+                retry_needs_schedule = 0;
+            }
+
             if (!completion_time_missing &&
                 headset_poll_is_due(&poll_state, now_ns)) {
                 headset_chatmix_result_t result = get_chatmix_value();
@@ -346,16 +402,47 @@ int main(int argc, char *argv[]) {
                             "headset polling paused\n");
                     clock_error_reported = 1;
                     completion_time_missing = 1;
+                    have_monotonic_time = 0;
                 } else {
+                    have_monotonic_time = 1;
                     headset_poll_mark_completed(&poll_state, now_ns);
                 }
             }
         }
-        
-        // Process any pending audio server events (e.g., new app streams)
-        process_audio_events();
 
-        usleep(POLL_INTERVAL_MS * 1000);
+        if (pulse_reconnect_state_is_connected(&reconnect_state)) {
+            audio_event_status_t audio_status = process_audio_events();
+            if (audio_status != AUDIO_EVENTS_OK) {
+                cleanup_audio_server();
+                audio_failure_reason = audio_event_failure_name(audio_status);
+                retry_needs_schedule = 1;
+            }
+        }
+
+        if (running && have_monotonic_time &&
+            pulse_reconnect_state_take_due_retry(
+                &reconnect_state,
+                now_ns)) {
+            audio_init_result_t retry_result = initialize_audio_server(
+                &audio_init_options);
+            if (retry_result == AUDIO_INIT_OK) {
+                if (pulse_reconnect_state_mark_connected(&reconnect_state) ==
+                    PULSE_RECONNECT_LOG_RECOVERY) {
+                    fprintf(stderr, "PulseAudio connection recovered\n");
+                }
+                audio_failure_reason = NULL;
+            } else if (retry_result == AUDIO_INIT_SHUTDOWN) {
+                running = 0;
+            } else {
+                fprintf(stderr,
+                        "PulseAudio reconnect attempt failed: %s\n",
+                        audio_init_result_name(retry_result));
+                audio_failure_reason = audio_init_result_name(retry_result);
+                retry_needs_schedule = 1;
+            }
+        }
+
+        if (running) usleep(POLL_INTERVAL_MS * 1000);
     }
     
     printf("\nExiting...\n");

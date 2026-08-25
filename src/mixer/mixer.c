@@ -1,11 +1,15 @@
 #include <pulse/pulseaudio.h>
+#include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "mixer.h"
 #include "chatmix_volume.h"
 #include "classified_volume_routing.h"
 #include "pulse_event_drain.h"
+#include "pulse_reconnect_state.h"
 #include "sink_input_request_state.h"
 #include "pulse_stream_lifecycle.h"
 #include "../active_application_inventory.h"
@@ -21,6 +25,11 @@ static audio_stream_inventory_t stream_inventory;
 static active_application_inventory_t application_inventory;
 static sink_input_request_tracker_t sink_input_request_tracker;
 static derived_inventory_state_t application_inventory_state;
+static pa_context_state_t observed_context_state = PA_CONTEXT_UNCONNECTED;
+
+#define AUDIO_INIT_TIMEOUT_NS \
+    (UINT64_C(5) * PULSE_RECONNECT_NANOSECONDS_PER_SECOND)
+#define AUDIO_INIT_WAIT_NS UINT64_C(25000000)
 
 struct sink_input_info_request {
     sink_input_request_token_t token;
@@ -37,25 +46,21 @@ struct snapshot_state {
 
 // Forward declarations for helpers used before their definitions
 static int wait_for_operation(pa_operation *op);
+static audio_init_result_t wait_for_initial_context(
+    uint64_t deadline_ns,
+    const audio_init_options_t *options);
+static audio_init_result_t wait_for_initialization_operation(
+    pa_operation *operation,
+    uint64_t deadline_ns,
+    const audio_init_options_t *options);
 static void reap_sink_input_requests(void);
 static void subscribe_callback(pa_context *c, pa_subscription_event_type_t t, uint32_t idx, void *userdata);
 static void sink_input_event_info_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud);
 static void sink_input_snapshot_cb(pa_context *ctx, const pa_sink_input_info *info, int eol, void *ud);
 
 static void context_state_callback(pa_context *c, void *userdata) {
-    pa_context_state_t state = pa_context_get_state(c);
-    int *ready = userdata;
-    
-    switch (state) {
-        case PA_CONTEXT_READY:
-            *ready = 1;
-            break;
-        case PA_CONTEXT_FAILED:
-            *ready = 2;
-            break;
-        default:
-            break;
-    }
+    (void)userdata;
+    observed_context_state = pa_context_get_state(c);
 }
 
 static int record_sink_input(const pa_sink_input_info *info) {
@@ -385,14 +390,179 @@ static void cancel_and_release_sink_input_requests(void) {
     }
 }
 
-int initialize_audio_server(void) {
-    int ready = 0;
-    has_valid_chatmix = 0;
+static int audio_init_shutdown_requested(
+    const audio_init_options_t *options) {
+    return options && options->running && !*options->running;
+}
+
+static int audio_monotonic_now_ns(uint64_t *now_ns) {
+    struct timespec timestamp;
+    if (!now_ns || clock_gettime(CLOCK_MONOTONIC, &timestamp) != 0 ||
+        timestamp.tv_sec < (time_t)0 ||
+        timestamp.tv_nsec < 0 ||
+        timestamp.tv_nsec >= 1000000000L) {
+        return -1;
+    }
+
+    uint64_t seconds = (uint64_t)timestamp.tv_sec;
+    uint64_t partial_ns = (uint64_t)timestamp.tv_nsec;
+    if (seconds > (UINT64_MAX - partial_ns) / UINT64_C(1000000000)) {
+        return -1;
+    }
+
+    *now_ns = seconds * UINT64_C(1000000000) + partial_ns;
+    return 0;
+}
+
+static audio_init_wait_result_t current_init_wait_result(
+    int completed,
+    int failed,
+    uint64_t deadline_ns,
+    const audio_init_options_t *options) {
+    if (audio_init_shutdown_requested(options)) {
+        return AUDIO_INIT_WAIT_SHUTDOWN;
+    }
+
+    uint64_t now_ns;
+    if (audio_monotonic_now_ns(&now_ns) != 0) {
+        return AUDIO_INIT_WAIT_FAILURE;
+    }
+
+    return audio_init_wait_decide(
+        completed,
+        failed,
+        audio_init_shutdown_requested(options),
+        now_ns,
+        deadline_ns);
+}
+
+static audio_init_result_t init_result_from_wait(
+    audio_init_wait_result_t result) {
+    switch (result) {
+        case AUDIO_INIT_WAIT_SUCCESS:
+            return AUDIO_INIT_OK;
+        case AUDIO_INIT_WAIT_TIMEOUT:
+            return AUDIO_INIT_TIMEOUT;
+        case AUDIO_INIT_WAIT_SHUTDOWN:
+            return AUDIO_INIT_SHUTDOWN;
+        case AUDIO_INIT_WAIT_PENDING:
+        case AUDIO_INIT_WAIT_FAILURE:
+        default:
+            return AUDIO_INIT_FAILED;
+    }
+}
+
+static int wait_before_next_init_pump(void) {
+    const struct timespec wait_time = {
+        .tv_sec = 0,
+        .tv_nsec = (long)AUDIO_INIT_WAIT_NS,
+    };
+
+    if (nanosleep(&wait_time, NULL) == 0 || errno == EINTR) return 0;
+    return -1;
+}
+
+static audio_init_result_t wait_for_initial_context(
+    uint64_t deadline_ns,
+    const audio_init_options_t *options) {
+    for (;;) {
+        audio_init_wait_result_t wait_result = current_init_wait_result(
+            observed_context_state == PA_CONTEXT_READY,
+            observed_context_state == PA_CONTEXT_FAILED ||
+                observed_context_state == PA_CONTEXT_TERMINATED,
+            deadline_ns,
+            options);
+        if (wait_result != AUDIO_INIT_WAIT_PENDING) {
+            return init_result_from_wait(wait_result);
+        }
+
+        if (pa_mainloop_iterate(mainloop, 0, NULL) < 0) {
+            return AUDIO_INIT_FAILED;
+        }
+        reap_sink_input_requests();
+
+        wait_result = current_init_wait_result(
+            observed_context_state == PA_CONTEXT_READY,
+            observed_context_state == PA_CONTEXT_FAILED ||
+                observed_context_state == PA_CONTEXT_TERMINATED,
+            deadline_ns,
+            options);
+        if (wait_result != AUDIO_INIT_WAIT_PENDING) {
+            return init_result_from_wait(wait_result);
+        }
+        if (wait_before_next_init_pump() != 0) return AUDIO_INIT_FAILED;
+    }
+}
+
+static audio_init_result_t wait_for_initialization_operation(
+    pa_operation *operation,
+    uint64_t deadline_ns,
+    const audio_init_options_t *options) {
+    if (!operation) return AUDIO_INIT_FAILED;
+
+    for (;;) {
+        pa_operation_state_t operation_state =
+            pa_operation_get_state(operation);
+        audio_init_wait_result_t wait_result = current_init_wait_result(
+            operation_state == PA_OPERATION_DONE,
+            operation_state == PA_OPERATION_CANCELLED ||
+                observed_context_state == PA_CONTEXT_FAILED ||
+                observed_context_state == PA_CONTEXT_TERMINATED,
+            deadline_ns,
+            options);
+        if (wait_result != AUDIO_INIT_WAIT_PENDING) {
+            return init_result_from_wait(wait_result);
+        }
+
+        if (pa_mainloop_iterate(mainloop, 0, NULL) < 0) {
+            return AUDIO_INIT_FAILED;
+        }
+        reap_sink_input_requests();
+
+        operation_state = pa_operation_get_state(operation);
+        wait_result = current_init_wait_result(
+            operation_state == PA_OPERATION_DONE,
+            operation_state == PA_OPERATION_CANCELLED ||
+                observed_context_state == PA_CONTEXT_FAILED ||
+                observed_context_state == PA_CONTEXT_TERMINATED,
+            deadline_ns,
+            options);
+        if (wait_result != AUDIO_INIT_WAIT_PENDING) {
+            return init_result_from_wait(wait_result);
+        }
+        if (wait_before_next_init_pump() != 0) return AUDIO_INIT_FAILED;
+    }
+}
+
+audio_init_result_t initialize_audio_server(
+    const audio_init_options_t *options) {
+    audio_init_result_t result = AUDIO_INIT_FAILED;
+    uint64_t start_ns;
+
+    if (context || mainloop || pending_sink_input_requests ||
+        sink_input_request_tracker.indexes ||
+        sink_input_request_tracker.requests ||
+        stream_inventory.streams ||
+        application_inventory.applications) {
+        return AUDIO_INIT_FAILED;
+    }
+
     pending_sink_input_requests = NULL;
     sink_input_request_tracker_init(&sink_input_request_tracker);
     derived_inventory_state_init(&application_inventory_state);
     audio_stream_inventory_init(&stream_inventory);
     active_application_inventory_init(&application_inventory);
+    observed_context_state = PA_CONTEXT_UNCONNECTED;
+
+    if (audio_init_shutdown_requested(options)) {
+        result = AUDIO_INIT_SHUTDOWN;
+        goto fail;
+    }
+    if (audio_monotonic_now_ns(&start_ns) != 0) goto fail;
+    uint64_t deadline_ns = pulse_reconnect_deadline_after(
+        start_ns,
+        AUDIO_INIT_TIMEOUT_NS);
+
     mainloop = pa_mainloop_new();
     if (!mainloop) goto fail;
 
@@ -400,54 +570,61 @@ int initialize_audio_server(void) {
     context = pa_context_new(mainloop_api, "chatwheel");
     if (!context) goto fail;
 
-    pa_context_set_state_callback(context, context_state_callback, &ready);
+    pa_context_set_state_callback(context, context_state_callback, NULL);
+    if (audio_init_shutdown_requested(options)) {
+        result = AUDIO_INIT_SHUTDOWN;
+        goto fail;
+    }
     if (pa_context_connect(context, NULL, 0, NULL) < 0) goto fail;
 
-    while (ready == 0) {
-        if (pa_mainloop_iterate(mainloop, 1, NULL) < 0) goto fail;
-    }
-
-    pa_context_set_state_callback(context, NULL, NULL);
-    if (ready != 1) goto fail;
+    result = wait_for_initial_context(deadline_ns, options);
+    if (result != AUDIO_INIT_OK) goto fail;
 
     // Subscribe before taking the snapshot so changes during it are not missed.
     pa_context_set_subscribe_callback(context, subscribe_callback, NULL);
     int subscription_succeeded = 0;
+    result = AUDIO_INIT_FAILED;
     pa_operation *sub = pa_context_subscribe(context,
         (pa_subscription_mask_t)(PA_SUBSCRIPTION_MASK_SINK_INPUT),
         subscribe_success_callback,
         &subscription_succeeded);
     if (!sub) goto fail;
 
-    int subscription_wait_result = wait_for_operation(sub);
+    result = wait_for_initialization_operation(sub, deadline_ns, options);
     pa_operation_state_t subscription_state = pa_operation_get_state(sub);
     if (subscription_state == PA_OPERATION_RUNNING) {
         pa_operation_cancel(sub);
     }
     pa_operation_unref(sub);
-    if (subscription_wait_result != 0 ||
+    if (result != AUDIO_INIT_OK ||
         subscription_state != PA_OPERATION_DONE ||
         !subscription_succeeded) {
+        if (result == AUDIO_INIT_OK) result = AUDIO_INIT_FAILED;
         goto fail;
     }
 
     struct snapshot_state snapshot = {0};
+    result = AUDIO_INIT_FAILED;
     pa_operation *snapshot_op = pa_context_get_sink_input_info_list(
         context,
         sink_input_snapshot_cb,
         &snapshot);
     if (!snapshot_op) goto fail;
 
-    int snapshot_wait_result = wait_for_operation(snapshot_op);
+    result = wait_for_initialization_operation(
+        snapshot_op,
+        deadline_ns,
+        options);
     pa_operation_state_t snapshot_operation_state =
         pa_operation_get_state(snapshot_op);
     if (snapshot_operation_state == PA_OPERATION_RUNNING) {
         pa_operation_cancel(snapshot_op);
     }
     pa_operation_unref(snapshot_op);
-    if (snapshot_wait_result != 0 ||
+    if (result != AUDIO_INIT_OK ||
         snapshot_operation_state != PA_OPERATION_DONE ||
         snapshot.failed) {
+        if (result == AUDIO_INIT_OK) result = AUDIO_INIT_FAILED;
         goto fail;
     }
 
@@ -460,16 +637,29 @@ int initialize_audio_server(void) {
         &application_inventory_state,
         initial_rebuild_succeeded);
     if (!initial_rebuild_succeeded) {
+        result = AUDIO_INIT_FAILED;
         fprintf(stderr,
                 "Failed to build active application inventory from PulseAudio snapshot\n");
         goto fail;
     }
 
-    return 0;
+    result = init_result_from_wait(current_init_wait_result(
+        1,
+        observed_context_state == PA_CONTEXT_FAILED ||
+            observed_context_state == PA_CONTEXT_TERMINATED,
+        deadline_ns,
+        options));
+    if (result != AUDIO_INIT_OK) goto fail;
+
+    if (has_valid_chatmix) {
+        route_all_classified_applications(context, &last_chatmix_targets);
+    }
+
+    return AUDIO_INIT_OK;
 
 fail:
     cleanup_audio_server();
-    return -1;
+    return result;
 }
 
 void cleanup_audio_server(void) {
@@ -488,13 +678,18 @@ void cleanup_audio_server(void) {
         pa_mainloop_free(mainloop);
         mainloop = NULL;
     }
+    observed_context_state = PA_CONTEXT_UNCONNECTED;
     sink_input_request_tracker_clear(&sink_input_request_tracker);
     active_application_inventory_clear(&application_inventory);
     audio_stream_inventory_clear(&stream_inventory);
-    has_valid_chatmix = 0;
+    /* The latest valid ChatMix target belongs to mixer policy, not a session. */
 }
 
 static int iterate_audio_mainloop(void *userdata, int block) {
+    if (observed_context_state == PA_CONTEXT_FAILED ||
+        observed_context_state == PA_CONTEXT_TERMINATED) {
+        return 0;
+    }
     return pa_mainloop_iterate(userdata, block, NULL);
 }
 
@@ -503,17 +698,21 @@ static void reap_audio_requests(void *userdata) {
     reap_sink_input_requests();
 }
 
-void process_audio_events(void) {
-    if (!mainloop) return;
+audio_event_status_t process_audio_events(void) {
+    audio_event_status_t status = audio_event_status_from_observation(
+        observed_context_state,
+        0);
+    if (status != AUDIO_EVENTS_OK) return status;
+    if (!mainloop) return AUDIO_EVENTS_OK;
 
     pulse_event_drain_result_t result = pulse_event_drain(
         iterate_audio_mainloop,
         mainloop,
         reap_audio_requests,
         NULL);
-    if (result == PULSE_EVENT_DRAIN_ERROR) {
-        fprintf(stderr, "Failed to process PulseAudio events\n");
-    }
+    return audio_event_status_from_observation(
+        observed_context_state,
+        result == PULSE_EVENT_DRAIN_ERROR);
 }
 
 size_t get_active_audio_stream_count(void) {
@@ -611,7 +810,10 @@ void adjust_volume_based_on_chatmix(float chatmix_value) {
            targets.game.linear * 100, targets.game.logarithmic * 100,
            targets.chat.linear * 100, targets.chat.logarithmic * 100);
     
-    route_all_classified_applications(context, &targets);
+    if (context && observed_context_state == PA_CONTEXT_READY &&
+        derived_inventory_state_is_available(&application_inventory_state)) {
+        route_all_classified_applications(context, &targets);
+    }
     printf("\n");
 }
 

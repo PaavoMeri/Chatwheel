@@ -10,6 +10,7 @@ SRCS = src/main.c src/headset/headset.c src/headset/headset_poll.c \
 	src/application_classifier.c \
 	src/pattern_matcher.c \
 	src/mixer/pulse_event_drain.c \
+	src/mixer/pulse_reconnect_state.c \
 	src/mixer/pulse_stream_lifecycle.c \
 	src/mixer/sink_input_request_state.c
 OBJS = $(SRCS:.c=.o)
@@ -26,6 +27,7 @@ CLASSIFIED_VOLUME_ROUTING_TEST_TARGET = build/test_classified_volume_routing
 PULSE_EVENT_DRAIN_TEST_TARGET = build/test_pulse_event_drain
 HEADSET_TEST_TARGET = build/test_headset
 HEADSET_POLL_TEST_TARGET = build/test_headset_poll
+PULSE_RECONNECT_STATE_TEST_TARGET = build/test_pulse_reconnect_state
 INSTALLER_TEST = tests/test_install.sh
 
 $(TARGET): $(OBJS)
@@ -41,6 +43,7 @@ test: $(TEST_TARGET) $(PULSE_LIFECYCLE_TEST_TARGET) \
 		$(CHATMIX_VOLUME_TEST_TARGET) $(SINK_INPUT_REQUEST_STATE_TEST_TARGET) \
 		$(CLASSIFIED_VOLUME_ROUTING_TEST_TARGET) $(PULSE_EVENT_DRAIN_TEST_TARGET) \
 		$(HEADSET_TEST_TARGET) $(HEADSET_POLL_TEST_TARGET) \
+		$(PULSE_RECONNECT_STATE_TEST_TARGET) \
 		$(INSTALLER_TEST)
 	./$(TEST_TARGET)
 	./$(PULSE_LIFECYCLE_TEST_TARGET)
@@ -54,6 +57,7 @@ test: $(TEST_TARGET) $(PULSE_LIFECYCLE_TEST_TARGET) \
 	./$(PULSE_EVENT_DRAIN_TEST_TARGET)
 	./$(HEADSET_TEST_TARGET)
 	./$(HEADSET_POLL_TEST_TARGET)
+	./$(PULSE_RECONNECT_STATE_TEST_TARGET)
 	bash ./$(INSTALLER_TEST)
 
 $(TEST_TARGET): tests/test_audio_stream_inventory.c src/audio_stream_inventory.c \
@@ -170,6 +174,16 @@ $(HEADSET_POLL_TEST_TARGET): tests/test_headset_poll.c \
 		tests/test_headset_poll.c src/headset/headset_poll.c \
 		-o $(HEADSET_POLL_TEST_TARGET)
 
+$(PULSE_RECONNECT_STATE_TEST_TARGET): \
+		tests/test_pulse_reconnect_state.c \
+		src/mixer/pulse_reconnect_state.c \
+		src/mixer/pulse_reconnect_state.h src/mixer/mixer.h
+	mkdir -p build
+	$(CC) $(CFLAGS) -Werror \
+		tests/test_pulse_reconnect_state.c \
+		src/mixer/pulse_reconnect_state.c \
+		-o $(PULSE_RECONNECT_STATE_TEST_TARGET)
+
 .PHONY: clean
 clean:
 	rm -f $(OBJS) $(TARGET) $(TEST_TARGET) $(PULSE_LIFECYCLE_TEST_TARGET) \
@@ -177,7 +191,8 @@ clean:
 		$(PATTERN_MATCHER_TEST_TARGET) $(APPLICATION_CLASSIFIER_TEST_TARGET) \
 		$(CHATMIX_VOLUME_TEST_TARGET) $(SINK_INPUT_REQUEST_STATE_TEST_TARGET) \
 		$(CLASSIFIED_VOLUME_ROUTING_TEST_TARGET) $(PULSE_EVENT_DRAIN_TEST_TARGET) \
-		$(HEADSET_TEST_TARGET) $(HEADSET_POLL_TEST_TARGET)
+		$(HEADSET_TEST_TARGET) $(HEADSET_POLL_TEST_TARGET) \
+		$(PULSE_RECONNECT_STATE_TEST_TARGET)
 
 .PHONY: dirs
 dirs:

@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <signal.h>
 #include <pulse/pulseaudio.h> // Include PulseAudio or PipeWire headers as needed
 #include "../application_classifier.h"
 #include "../application_identity.h"
@@ -25,10 +26,78 @@ typedef struct {
     int matched_config_index;
 } active_application_view_t;
 
+typedef enum {
+    AUDIO_INIT_OK = 0,
+    AUDIO_INIT_FAILED,
+    AUDIO_INIT_TIMEOUT,
+    AUDIO_INIT_SHUTDOWN
+} audio_init_result_t;
+
+typedef struct {
+    const volatile sig_atomic_t *running;
+} audio_init_options_t;
+
+typedef enum {
+    AUDIO_EVENTS_OK,
+    AUDIO_EVENTS_CONNECTION_LOST,
+    AUDIO_EVENTS_MAINLOOP_ERROR
+} audio_event_status_t;
+
+typedef enum {
+    AUDIO_INIT_WAIT_PENDING,
+    AUDIO_INIT_WAIT_SUCCESS,
+    AUDIO_INIT_WAIT_FAILURE,
+    AUDIO_INIT_WAIT_TIMEOUT,
+    AUDIO_INIT_WAIT_SHUTDOWN
+} audio_init_wait_result_t;
+
+/*
+ * Shared by production waits and unit tests. Decision priority is shutdown,
+ * inclusive deadline, failure, completion, and finally continued waiting.
+ */
+static inline audio_init_wait_result_t audio_init_wait_decide(
+    int completed,
+    int failed,
+    int shutdown_requested,
+    uint64_t now_ns,
+    uint64_t deadline_ns) {
+    if (shutdown_requested) return AUDIO_INIT_WAIT_SHUTDOWN;
+    if (now_ns >= deadline_ns) return AUDIO_INIT_WAIT_TIMEOUT;
+    if (failed) return AUDIO_INIT_WAIT_FAILURE;
+    if (completed) return AUDIO_INIT_WAIT_SUCCESS;
+    return AUDIO_INIT_WAIT_PENDING;
+}
+
+/* Connection loss takes precedence when the same dispatch also fails. */
+static inline audio_event_status_t audio_event_status_from_observation(
+    pa_context_state_t context_state,
+    int mainloop_failed) {
+    if (context_state == PA_CONTEXT_FAILED ||
+        context_state == PA_CONTEXT_TERMINATED) {
+        return AUDIO_EVENTS_CONNECTION_LOST;
+    }
+    return mainloop_failed
+        ? AUDIO_EVENTS_MAINLOOP_ERROR
+        : AUDIO_EVENTS_OK;
+}
+
 // Initialize and cleanup
-int initialize_audio_server(void);
+/*
+ * Performs one bounded connect+subscribe+snapshot attempt. The complete
+ * attempt has one five-second monotonic deadline. When options->running is
+ * non-NULL, a zero value interrupts the attempt promptly. On every non-OK
+ * result all partially initialized PulseAudio resources are cleaned up.
+ */
+audio_init_result_t initialize_audio_server(
+    const audio_init_options_t *options);
 void cleanup_audio_server(void);
-void process_audio_events(void);
+
+/*
+ * Pumps currently pending events without blocking. This function never frees
+ * the context or mainloop; the caller must run cleanup_audio_server() after a
+ * CONNECTION_LOST or MAINLOOP_ERROR result has returned.
+ */
+audio_event_status_t process_audio_events(void);
 
 size_t get_active_audio_stream_count(void);
 
