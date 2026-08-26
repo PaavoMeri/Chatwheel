@@ -20,6 +20,7 @@ static void test_supported_null_arguments(void) {
     derived_inventory_state_init(&derived_state);
 
     sink_input_request_tracker_init(NULL);
+    assert(sink_input_request_tracker_next_index_capacity(0, NULL) == -1);
     assert(sink_input_request_tracker_begin(
                NULL, 1, SINK_INPUT_REQUEST_NEW, &token) == -1);
     assert(sink_input_request_tracker_begin(
@@ -27,6 +28,20 @@ static void test_supported_null_arguments(void) {
     sink_input_request_tracker_invalidate(NULL, 1);
     assert(!sink_input_request_tracker_is_current(NULL, &token));
     assert(!sink_input_request_tracker_is_current(&tracker, NULL));
+    assert(sink_input_request_tracker_observe_inventory_result(
+               NULL, &token, 0) == -1);
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, NULL, 0) == -1);
+    assert(!sink_input_request_tracker_is_initial_route_pending(
+        NULL,
+        &token));
+    assert(!sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        NULL));
+    assert(!sink_input_request_tracker_record_volume_submission(
+        NULL,
+        1,
+        1));
     sink_input_request_tracker_finish(NULL, &token);
     sink_input_request_tracker_finish(&tracker, NULL);
     sink_input_request_tracker_clear(NULL);
@@ -56,6 +71,30 @@ static void test_request_result_is_accepted(void) {
 
     sink_input_request_tracker_finish(&tracker, &request);
     assert(!sink_input_request_tracker_is_current(&tracker, &request));
+    sink_input_request_tracker_clear(&tracker);
+}
+
+static void test_unknown_new_submission_completes_pending(void) {
+    sink_input_request_tracker_t tracker;
+    sink_input_request_token_t request;
+    sink_input_request_tracker_init(&tracker);
+
+    assert(sink_input_request_tracker_begin(
+               &tracker, 11, SINK_INPUT_REQUEST_NEW, &request) == 0);
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &request, 0) == 0);
+    assert(sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &request));
+    assert(sink_input_request_tracker_record_volume_submission(
+        &tracker,
+        11,
+        1));
+    assert(!sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &request));
+
+    sink_input_request_tracker_finish(&tracker, &request);
     sink_input_request_tracker_clear(&tracker);
 }
 
@@ -114,6 +153,342 @@ static void test_pending_new_and_change_preserve_intent(void) {
     sink_input_request_tracker_finish(&tracker, &new_request);
     sink_input_request_tracker_finish(&tracker, &change_request);
     sink_input_request_tracker_clear(&tracker);
+}
+
+static void test_change_before_new_preserves_initial_route(void) {
+    sink_input_request_tracker_t tracker;
+    sink_input_request_token_t new_request;
+    sink_input_request_token_t change_request;
+    sink_input_request_tracker_init(&tracker);
+
+    assert(sink_input_request_tracker_begin(
+               &tracker, 41, SINK_INPUT_REQUEST_NEW, &new_request) == 0);
+    assert(sink_input_request_tracker_begin(
+               &tracker, 41, SINK_INPUT_REQUEST_CHANGE, &change_request) == 0);
+
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &change_request, 0) == 0);
+    assert(sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &change_request));
+    assert(sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &new_request));
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &new_request, 1) == 0);
+    assert(sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &new_request));
+
+    assert(sink_input_request_tracker_record_volume_submission(
+        &tracker,
+        41,
+        1));
+    assert(!sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &new_request));
+    assert(!sink_input_request_tracker_record_volume_submission(
+        &tracker,
+        41,
+        1));
+
+    sink_input_request_tracker_finish(&tracker, &change_request);
+    sink_input_request_tracker_finish(&tracker, &new_request);
+    sink_input_request_tracker_clear(&tracker);
+}
+
+static void test_new_before_change_routes_only_once(void) {
+    sink_input_request_tracker_t tracker;
+    sink_input_request_token_t new_request;
+    sink_input_request_token_t change_request;
+    sink_input_request_tracker_init(&tracker);
+
+    assert(sink_input_request_tracker_begin(
+               &tracker, 48, SINK_INPUT_REQUEST_NEW, &new_request) == 0);
+    assert(sink_input_request_tracker_begin(
+               &tracker, 48, SINK_INPUT_REQUEST_CHANGE, &change_request) == 0);
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &new_request, 0) == 0);
+    assert(sink_input_request_tracker_record_volume_submission(
+        &tracker,
+        48,
+        1));
+
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &change_request, 1) == 0);
+    assert(!sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &change_request));
+    assert(!sink_input_request_tracker_record_volume_submission(
+        &tracker,
+        48,
+        1));
+
+    sink_input_request_tracker_finish(&tracker, &new_request);
+    sink_input_request_tracker_finish(&tracker, &change_request);
+    sink_input_request_tracker_clear(&tracker);
+}
+
+static void test_duplicate_new_routes_only_once(void) {
+    sink_input_request_tracker_t tracker;
+    sink_input_request_token_t first_new;
+    sink_input_request_token_t duplicate_new;
+    sink_input_request_tracker_init(&tracker);
+
+    assert(sink_input_request_tracker_begin(
+               &tracker, 49, SINK_INPUT_REQUEST_NEW, &first_new) == 0);
+    assert(sink_input_request_tracker_begin(
+               &tracker, 49, SINK_INPUT_REQUEST_NEW, &duplicate_new) == 0);
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &first_new, 0) == 0);
+    assert(sink_input_request_tracker_record_volume_submission(
+        &tracker,
+        49,
+        1));
+
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &duplicate_new, 1) == 0);
+    assert(!sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &duplicate_new));
+    assert(!sink_input_request_tracker_record_volume_submission(
+        &tracker,
+        49,
+        1));
+
+    sink_input_request_tracker_finish(&tracker, &first_new);
+    sink_input_request_tracker_finish(&tracker, &duplicate_new);
+    sink_input_request_tracker_clear(&tracker);
+}
+
+static void test_change_only_unknown_stream_can_complete_initial_route(void) {
+    sink_input_request_tracker_t tracker;
+    sink_input_request_token_t change_request;
+    sink_input_request_tracker_init(&tracker);
+
+    assert(sink_input_request_tracker_begin(
+               &tracker, 42, SINK_INPUT_REQUEST_CHANGE, &change_request) == 0);
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &change_request, 0) == 0);
+    assert(sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &change_request));
+    assert(sink_input_request_tracker_record_volume_submission(
+        &tracker,
+        42,
+        1));
+    assert(!sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &change_request));
+
+    sink_input_request_tracker_finish(&tracker, &change_request);
+    sink_input_request_tracker_clear(&tracker);
+}
+
+static void test_pending_survives_failed_or_missing_submission(void) {
+    sink_input_request_tracker_t tracker;
+    sink_input_request_token_t first_result;
+    sink_input_request_token_t later_result;
+    sink_input_request_tracker_init(&tracker);
+
+    assert(sink_input_request_tracker_begin(
+               &tracker, 43, SINK_INPUT_REQUEST_NEW, &first_result) == 0);
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &first_result, 0) == 0);
+
+    /* Upsert/rebuild failure or an empty plan records no submission. */
+    assert(sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &first_result));
+    assert(!sink_input_request_tracker_record_volume_submission(
+        &tracker,
+        43,
+        0));
+    assert(sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &first_result));
+
+    sink_input_request_tracker_finish(&tracker, &first_result);
+    assert(tracker.index_count == 1);
+    assert(sink_input_request_tracker_begin(
+               &tracker, 43, SINK_INPUT_REQUEST_CHANGE, &later_result) == 0);
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &later_result, 1) == 0);
+    assert(sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &later_result));
+
+    /* A NULL pa_operation result also leaves pending set. */
+    assert(!sink_input_request_tracker_record_volume_submission(
+        &tracker,
+        43,
+        0));
+    assert(sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &later_result));
+    assert(sink_input_request_tracker_record_volume_submission(
+        &tracker,
+        43,
+        1));
+    assert(!sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &later_result));
+
+    sink_input_request_tracker_finish(&tracker, &later_result);
+    assert(tracker.index_count == 0);
+    sink_input_request_tracker_clear(&tracker);
+}
+
+static void test_other_stream_submission_does_not_complete_trigger(void) {
+    sink_input_request_tracker_t tracker;
+    sink_input_request_token_t trigger;
+    sink_input_request_token_t same_application_stream;
+    sink_input_request_tracker_init(&tracker);
+
+    assert(sink_input_request_tracker_begin(
+               &tracker, 44, SINK_INPUT_REQUEST_NEW, &trigger) == 0);
+    assert(sink_input_request_tracker_begin(
+               &tracker, 45, SINK_INPUT_REQUEST_NEW,
+               &same_application_stream) == 0);
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &trigger, 0) == 0);
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &same_application_stream, 0) == 0);
+
+    assert(sink_input_request_tracker_record_volume_submission(
+        &tracker,
+        45,
+        1));
+    assert(sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &trigger));
+    assert(!sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &same_application_stream));
+
+    sink_input_request_tracker_finish(&tracker, &same_application_stream);
+    assert(sink_input_request_tracker_record_volume_submission(
+        &tracker,
+        44,
+        1));
+    sink_input_request_tracker_finish(&tracker, &trigger);
+    sink_input_request_tracker_clear(&tracker);
+}
+
+static void test_snapshot_known_events_do_not_start_pending(void) {
+    sink_input_request_tracker_t tracker;
+    sink_input_request_token_t duplicate_new;
+    sink_input_request_token_t property_change;
+    sink_input_request_tracker_init(&tracker);
+
+    assert(sink_input_request_tracker_begin(
+               &tracker, 46, SINK_INPUT_REQUEST_NEW, &duplicate_new) == 0);
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &duplicate_new, 1) == 0);
+    assert(!sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &duplicate_new));
+    assert(sink_input_request_tracker_begin(
+               &tracker, 46, SINK_INPUT_REQUEST_CHANGE, &property_change) == 0);
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &property_change, 1) == 0);
+    assert(!sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &property_change));
+
+    sink_input_request_tracker_finish(&tracker, &duplicate_new);
+    sink_input_request_tracker_finish(&tracker, &property_change);
+    sink_input_request_tracker_clear(&tracker);
+}
+
+static void test_init_replay_completes_pending_without_duplicate(void) {
+    sink_input_request_tracker_t tracker;
+    sink_input_request_token_t subscription_result;
+    sink_input_request_token_t later_event;
+    sink_input_request_tracker_init(&tracker);
+
+    assert(sink_input_request_tracker_begin(
+               &tracker, 52, SINK_INPUT_REQUEST_NEW,
+               &subscription_result) == 0);
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &subscription_result, 0) == 0);
+    sink_input_request_tracker_finish(&tracker, &subscription_result);
+    assert(tracker.index_count == 1);
+
+    /* Successful all-stream init replay records the submitted raw index. */
+    assert(sink_input_request_tracker_record_volume_submission(
+        &tracker,
+        52,
+        1));
+    assert(tracker.index_count == 0);
+
+    assert(sink_input_request_tracker_begin(
+               &tracker, 52, SINK_INPUT_REQUEST_CHANGE, &later_event) == 0);
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &later_event, 1) == 0);
+    assert(!sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &later_event));
+
+    sink_input_request_tracker_finish(&tracker, &later_event);
+    sink_input_request_tracker_clear(&tracker);
+}
+
+static void test_remove_clears_pending_and_stale_request_cannot_restore_it(void) {
+    sink_input_request_tracker_t tracker;
+    sink_input_request_token_t old_request;
+    sink_input_request_token_t reused_index;
+    sink_input_request_tracker_init(&tracker);
+
+    assert(sink_input_request_tracker_begin(
+               &tracker, 47, SINK_INPUT_REQUEST_NEW, &old_request) == 0);
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &old_request, 0) == 0);
+    sink_input_request_tracker_invalidate(&tracker, 47);
+    assert(!sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &old_request));
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &old_request, 0) == -1);
+
+    assert(sink_input_request_tracker_begin(
+               &tracker, 47, SINK_INPUT_REQUEST_NEW, &reused_index) == 0);
+    assert(!sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &reused_index));
+    assert(sink_input_request_tracker_observe_inventory_result(
+               &tracker, &reused_index, 0) == 0);
+    assert(sink_input_request_tracker_is_initial_route_pending(
+        &tracker,
+        &reused_index));
+
+    sink_input_request_tracker_finish(&tracker, &old_request);
+    sink_input_request_tracker_finish(&tracker, &reused_index);
+    sink_input_request_tracker_invalidate(&tracker, 47);
+    assert(tracker.index_count == 0);
+    sink_input_request_tracker_clear(&tracker);
+}
+
+static void test_cleanup_releases_pending_indexes(void) {
+    sink_input_request_tracker_t tracker;
+    sink_input_request_token_t requests[10];
+    sink_input_request_tracker_init(&tracker);
+
+    for (size_t i = 0; i < 10; i++) {
+        assert(sink_input_request_tracker_begin(
+                   &tracker,
+                   (uint32_t)(80 + i),
+                   SINK_INPUT_REQUEST_NEW,
+                   &requests[i]) == 0);
+        assert(sink_input_request_tracker_observe_inventory_result(
+                   &tracker, &requests[i], 0) == 0);
+        sink_input_request_tracker_finish(&tracker, &requests[i]);
+    }
+
+    assert(tracker.index_count == 10);
+    assert(tracker.index_capacity >= 10);
+    sink_input_request_tracker_clear(&tracker);
+    assert_tracker_is_cleared(&tracker);
 }
 
 static void test_remove_invalidates_same_index_only(void) {
@@ -259,6 +634,25 @@ static void test_index_growth_and_nontrivial_finish_order(void) {
     assert_tracker_is_cleared(&tracker);
 }
 
+static void test_capacity_growth_and_overflow_boundaries(void) {
+    size_t next_capacity = 0;
+
+    assert(sink_input_request_tracker_next_index_capacity(
+               0, &next_capacity) == 0);
+    assert(next_capacity == 4);
+    assert(sink_input_request_tracker_next_index_capacity(
+               next_capacity, &next_capacity) == 0);
+    assert(next_capacity == 8);
+    assert(sink_input_request_tracker_next_index_capacity(
+               SIZE_MAX, &next_capacity) == -1);
+    assert(sink_input_request_tracker_next_index_capacity(
+               SIZE_MAX / 2 + 1, &next_capacity) == -1);
+    size_t byte_overflow_capacity =
+        SIZE_MAX / sizeof(sink_input_index_generation_t) / 2 + 1;
+    assert(sink_input_request_tracker_next_index_capacity(
+               byte_overflow_capacity, &next_capacity) == -1);
+}
+
 static void test_repeated_invalidation_and_finish(void) {
     sink_input_request_tracker_t tracker;
     sink_input_request_token_t first;
@@ -378,13 +772,25 @@ static void test_repeated_derived_inventory_cycles(void) {
 int main(void) {
     test_supported_null_arguments();
     test_request_result_is_accepted();
+    test_unknown_new_submission_completes_pending();
     test_remove_rejects_late_result();
     test_new_after_index_reuse_is_accepted();
     test_pending_new_and_change_preserve_intent();
+    test_change_before_new_preserves_initial_route();
+    test_new_before_change_routes_only_once();
+    test_duplicate_new_routes_only_once();
+    test_change_only_unknown_stream_can_complete_initial_route();
+    test_pending_survives_failed_or_missing_submission();
+    test_other_stream_submission_does_not_complete_trigger();
+    test_snapshot_known_events_do_not_start_pending();
+    test_init_replay_completes_pending_without_duplicate();
+    test_remove_clears_pending_and_stale_request_cannot_restore_it();
+    test_cleanup_releases_pending_indexes();
     test_remove_invalidates_same_index_only();
     test_generation_wrap_keeps_old_request_invalid();
     test_clear_with_live_tokens_and_reuse();
     test_index_growth_and_nontrivial_finish_order();
+    test_capacity_growth_and_overflow_boundaries();
     test_repeated_invalidation_and_finish();
     test_repeated_tracker_lifecycle_cycles();
     test_derived_inventory_failure_and_recovery();

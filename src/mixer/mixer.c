@@ -129,24 +129,45 @@ static int set_sink_input_volume_target(pa_context *c,
     return 0;
 }
 
-static void apply_classified_volume_plan(
+static int apply_classified_volume_plan(
     pa_context *c,
     const classified_volume_plan_t *plan,
-    const char *action) {
+    const char *action,
+    const uint32_t *triggering_stream_index) {
+    int triggering_stream_submitted = 0;
+
     for (size_t i = 0; i < plan->count; i++) {
         const classified_volume_assignment_t *assignment =
             &plan->assignments[i];
-        if (set_sink_input_volume_target(
+        int operation_created = set_sink_input_volume_target(
                 c,
                 assignment->stream_index,
                 assignment->channel_count,
-                assignment->pulse_volume) == 0) {
+                assignment->pulse_volume) == 0;
+        if (triggering_stream_index &&
+            assignment->stream_index == *triggering_stream_index) {
+            if (audio_initial_stream_trigger_was_submitted(
+                    *triggering_stream_index,
+                    assignment->stream_index,
+                    operation_created)) {
+                triggering_stream_submitted = 1;
+            }
+        } else {
+            sink_input_request_tracker_record_volume_submission(
+                &sink_input_request_tracker,
+                assignment->stream_index,
+                operation_created);
+        }
+
+        if (operation_created) {
             printf("\n%s PulseAudio stream %u (%s)",
                    action,
                    assignment->stream_index,
                    application_group_name(assignment->group));
         }
     }
+
+    return triggering_stream_submitted;
 }
 
 static void route_all_classified_applications(
@@ -168,11 +189,11 @@ static void route_all_classified_applications(
         return;
     }
 
-    apply_classified_volume_plan(c, &plan, "Submitted volume for");
+    apply_classified_volume_plan(c, &plan, "Submitted volume for", NULL);
     classified_volume_plan_clear(&plan);
 }
 
-static void route_classified_application_for_new_stream(
+static int route_classified_application_for_new_stream(
     pa_context *c,
     uint32_t stream_index) {
     classified_volume_plan_t plan;
@@ -191,11 +212,16 @@ static void route_classified_application_for_new_stream(
                 "Failed to plan classified volume for new stream %u\n",
                 stream_index);
         classified_volume_plan_clear(&plan);
-        return;
+        return 0;
     }
 
-    apply_classified_volume_plan(c, &plan, "Submitted current mix for");
+    int triggering_stream_submitted = apply_classified_volume_plan(
+        c,
+        &plan,
+        "Submitted current mix for",
+        &stream_index);
     classified_volume_plan_clear(&plan);
+    return triggering_stream_submitted;
 }
 
 static int rebuild_active_applications_after_event(
@@ -251,6 +277,16 @@ static void sink_input_event_info_cb(
     int was_known =
         audio_stream_inventory_find(&stream_inventory, info->index) != NULL;
     request->result_received = 1;
+    if (sink_input_request_tracker_observe_inventory_result(
+            &sink_input_request_tracker,
+            &request->token,
+            was_known) != 0) {
+        fprintf(stderr,
+                "Failed to preserve initial routing for PulseAudio stream %u\n",
+                info->index);
+        return;
+    }
+
     int rebuild_succeeded = 0;
     if (record_sink_input(info) != 0) {
         fprintf(stderr,
@@ -267,14 +303,21 @@ static void sink_input_event_info_cb(
             info->index) == 0;
     }
 
-    if (audio_new_stream_should_route_current_mix(
-            request->token.intent == SINK_INPUT_REQUEST_NEW,
-            was_known,
+    if (audio_initial_stream_route_should_be_attempted(
+            sink_input_request_tracker_is_initial_route_pending(
+                &sink_input_request_tracker,
+                &request->token),
             rebuild_succeeded,
             derived_inventory_state_is_available(
                 &application_inventory_state),
             has_valid_chatmix)) {
-        route_classified_application_for_new_stream(ctx, info->index);
+        int operation_created = route_classified_application_for_new_stream(
+            ctx,
+            info->index);
+        sink_input_request_tracker_record_volume_submission(
+            &sink_input_request_tracker,
+            info->index,
+            operation_created);
     }
 }
 

@@ -20,6 +20,7 @@ typedef struct sink_input_request_token {
 typedef struct {
     uint32_t index;
     uint64_t generation;
+    int initial_route_pending;
 } sink_input_index_generation_t;
 
 /*
@@ -44,6 +45,14 @@ typedef struct {
 void sink_input_request_tracker_init(sink_input_request_tracker_t *tracker);
 
 /*
+ * Computes the next allocation capacity used by the tracker. Returns -1 for
+ * a NULL result pointer or when doubling or byte-size calculation overflows.
+ */
+int sink_input_request_tracker_next_index_capacity(
+    size_t current_capacity,
+    size_t *next_capacity);
+
+/*
  * Registers token for the index's current generation. The caller must keep
  * token alive until sink_input_request_tracker_finish() or clear() is called.
  * Returns 0 on success and -1 for invalid arguments or allocation failure.
@@ -66,6 +75,34 @@ void sink_input_request_tracker_invalidate(
 int sink_input_request_tracker_is_current(
     const sink_input_request_tracker_t *tracker,
     const sink_input_request_token_t *token);
+
+/*
+ * Records whether the current request result found its index in the raw
+ * inventory before upsert. An unknown index starts pending initial routing;
+ * a known index preserves any existing pending state. Pending is retained
+ * after the last request finishes, until a successful submission, index
+ * invalidation, or tracker clear. Returns 0 on success and -1 when token is
+ * not registered and current.
+ */
+int sink_input_request_tracker_observe_inventory_result(
+    sink_input_request_tracker_t *tracker,
+    const sink_input_request_token_t *token,
+    int was_known);
+
+/* Returns nonzero only when token is current and its index is pending. */
+int sink_input_request_tracker_is_initial_route_pending(
+    const sink_input_request_tracker_t *tracker,
+    const sink_input_request_token_t *token);
+
+/*
+ * Records the outcome of creating a volume operation for index. A successful
+ * creation clears that index's pending state; failure leaves it unchanged.
+ * Returns nonzero only when this call cleared pending state.
+ */
+int sink_input_request_tracker_record_volume_submission(
+    sink_input_request_tracker_t *tracker,
+    uint32_t index,
+    int operation_created);
 
 /*
  * Unregisters token. Repeated calls, a token detached by clear(), and an

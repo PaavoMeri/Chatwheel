@@ -81,22 +81,25 @@ static inline audio_event_status_t audio_event_status_from_observation(
         : AUDIO_EVENTS_OK;
 }
 
-/*
- * A NEW request may route the current mix only for a stream that was absent
- * before its raw-inventory upsert. update_succeeded covers both the upsert and
- * the following application-inventory rebuild.
- */
-static inline int audio_new_stream_should_route_current_mix(
-    int is_new_request,
-    int was_known,
+/* A pending initial route is attempted only from a usable updated inventory. */
+static inline int audio_initial_stream_route_should_be_attempted(
+    int initial_route_pending,
     int update_succeeded,
     int inventory_available,
     int has_valid_target) {
-    return is_new_request &&
-           !was_known &&
+    return initial_route_pending &&
            update_succeeded &&
            inventory_available &&
            has_valid_target;
+}
+
+/* Identifies success for the triggering raw index, not another assignment. */
+static inline int audio_initial_stream_trigger_was_submitted(
+    uint32_t triggering_stream_index,
+    uint32_t submitted_stream_index,
+    int operation_created) {
+    return operation_created &&
+           triggering_stream_index == submitted_stream_index;
 }
 
 // Initialize and cleanup

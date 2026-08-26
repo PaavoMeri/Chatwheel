@@ -16,15 +16,33 @@ static sink_input_index_generation_t *find_index(
     return NULL;
 }
 
+int sink_input_request_tracker_next_index_capacity(
+    size_t current_capacity,
+    size_t *next_capacity) {
+    if (!next_capacity) return -1;
+
+    size_t new_capacity = INITIAL_INDEX_CAPACITY;
+    if (current_capacity > 0) {
+        if (current_capacity > SIZE_MAX / 2) return -1;
+        new_capacity = current_capacity * 2;
+    }
+    if (new_capacity > SIZE_MAX / sizeof(sink_input_index_generation_t)) {
+        return -1;
+    }
+
+    *next_capacity = new_capacity;
+    return 0;
+}
+
 static int ensure_index_capacity(sink_input_request_tracker_t *tracker) {
     if (tracker->index_count < tracker->index_capacity) return 0;
 
-    size_t new_capacity = INITIAL_INDEX_CAPACITY;
-    if (tracker->index_capacity > 0) {
-        if (tracker->index_capacity > SIZE_MAX / 2) return -1;
-        new_capacity = tracker->index_capacity * 2;
+    size_t new_capacity;
+    if (sink_input_request_tracker_next_index_capacity(
+            tracker->index_capacity,
+            &new_capacity) != 0) {
+        return -1;
     }
-    if (new_capacity > SIZE_MAX / sizeof(*tracker->indexes)) return -1;
 
     sink_input_index_generation_t *resized = realloc(
         tracker->indexes,
@@ -67,6 +85,7 @@ static void remove_unused_index(
 
     for (size_t i = 0; i < tracker->index_count; i++) {
         if (tracker->indexes[i].index != index) continue;
+        if (tracker->indexes[i].initial_route_pending) return;
 
         if (i + 1 < tracker->index_count) {
             memmove(
@@ -103,6 +122,7 @@ int sink_input_request_tracker_begin(
         *index_state = (sink_input_index_generation_t){
             .index = index,
             .generation = 0,
+            .initial_route_pending = 0,
         };
         tracker->index_count++;
     }
@@ -132,6 +152,8 @@ void sink_input_request_tracker_invalidate(
     if (index_state) {
         /* Unsigned wrap is safe because all older live tokens are invalidated. */
         index_state->generation++;
+        index_state->initial_route_pending = 0;
+        remove_unused_index(tracker, index);
     }
 }
 
@@ -147,6 +169,46 @@ int sink_input_request_tracker_is_current(
         tracker,
         token->index);
     return index_state && index_state->generation == token->generation;
+}
+
+int sink_input_request_tracker_observe_inventory_result(
+    sink_input_request_tracker_t *tracker,
+    const sink_input_request_token_t *token,
+    int was_known) {
+    if (!sink_input_request_tracker_is_current(tracker, token)) return -1;
+
+    sink_input_index_generation_t *index_state = find_index(
+        tracker,
+        token->index);
+    if (!index_state) return -1;
+
+    if (!was_known) index_state->initial_route_pending = 1;
+    return 0;
+}
+
+int sink_input_request_tracker_is_initial_route_pending(
+    const sink_input_request_tracker_t *tracker,
+    const sink_input_request_token_t *token) {
+    if (!sink_input_request_tracker_is_current(tracker, token)) return 0;
+
+    sink_input_index_generation_t *index_state = find_index(
+        tracker,
+        token->index);
+    return index_state && index_state->initial_route_pending;
+}
+
+int sink_input_request_tracker_record_volume_submission(
+    sink_input_request_tracker_t *tracker,
+    uint32_t index,
+    int operation_created) {
+    if (!tracker || !operation_created) return 0;
+
+    sink_input_index_generation_t *index_state = find_index(tracker, index);
+    if (!index_state || !index_state->initial_route_pending) return 0;
+
+    index_state->initial_route_pending = 0;
+    remove_unused_index(tracker, index);
+    return 1;
 }
 
 void sink_input_request_tracker_finish(

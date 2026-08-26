@@ -147,54 +147,18 @@ static void test_shared_deadline_across_init_phases(void) {
            AUDIO_INIT_WAIT_SHUTDOWN);
 }
 
-static void test_new_stream_routing_decision(void) {
-    assert(audio_new_stream_should_route_current_mix(1, 0, 1, 1, 1));
-    assert(!audio_new_stream_should_route_current_mix(1, 1, 1, 1, 1));
-    assert(!audio_new_stream_should_route_current_mix(0, 0, 1, 1, 1));
-    assert(!audio_new_stream_should_route_current_mix(1, 0, 0, 1, 1));
-    assert(!audio_new_stream_should_route_current_mix(1, 0, 1, 0, 1));
-    assert(!audio_new_stream_should_route_current_mix(1, 0, 1, 1, 0));
+static void test_initial_stream_routing_decision(void) {
+    assert(audio_initial_stream_route_should_be_attempted(1, 1, 1, 1));
+    assert(!audio_initial_stream_route_should_be_attempted(0, 1, 1, 1));
+    assert(!audio_initial_stream_route_should_be_attempted(1, 0, 1, 1));
+    assert(!audio_initial_stream_route_should_be_attempted(1, 1, 0, 1));
+    assert(!audio_initial_stream_route_should_be_attempted(1, 1, 1, 0));
 }
 
-static void test_new_stream_routing_deduplication_sequence(void) {
-    int stream_5861_was_known = 1;
-    int stream_5866_was_known = 0;
-    int stream_5861_routed_operations = 0;
-    int stream_5866_routed_operations = 0;
-
-    /* A post-snapshot duplicate NEW for 5861 must not route. */
-    stream_5861_routed_operations +=
-        audio_new_stream_should_route_current_mix(
-            1, stream_5861_was_known, 1, 1, 1);
-    assert(stream_5861_routed_operations == 0);
-
-    /* The first NEW for a stream absent from the snapshot routes once. */
-    stream_5866_routed_operations +=
-        audio_new_stream_should_route_current_mix(
-            1, stream_5866_was_known, 1, 1, 1);
-    assert(stream_5866_routed_operations == 1);
-    stream_5866_was_known = 1;
-    stream_5866_routed_operations +=
-        audio_new_stream_should_route_current_mix(
-            1, stream_5866_was_known, 1, 1, 1);
-    assert(stream_5866_routed_operations == 1);
-
-    /* REMOVE makes a reused numeric index unknown to the next NEW. */
-    stream_5866_was_known = 0;
-    stream_5866_routed_operations +=
-        audio_new_stream_should_route_current_mix(
-            1, stream_5866_was_known, 1, 1, 1);
-    assert(stream_5866_routed_operations == 2);
-
-    /* Two distinct unknown indexes each receive their own routing decision. */
-    int stream_6000_routed_operations =
-        audio_new_stream_should_route_current_mix(
-            1, 0, 1, 1, 1);
-    int stream_6001_routed_operations =
-        audio_new_stream_should_route_current_mix(
-            1, 0, 1, 1, 1);
-    assert(stream_6000_routed_operations == 1);
-    assert(stream_6001_routed_operations == 1);
+static void test_initial_stream_trigger_submission_result(void) {
+    assert(audio_initial_stream_trigger_was_submitted(170, 170, 1));
+    assert(!audio_initial_stream_trigger_was_submitted(170, 163, 1));
+    assert(!audio_initial_stream_trigger_was_submitted(170, 170, 0));
 }
 
 int main(void) {
@@ -205,8 +169,8 @@ int main(void) {
     test_audio_status_mapping();
     test_init_wait_decisions();
     test_shared_deadline_across_init_phases();
-    test_new_stream_routing_decision();
-    test_new_stream_routing_deduplication_sequence();
+    test_initial_stream_routing_decision();
+    test_initial_stream_trigger_submission_result();
 
     printf("pulse reconnect state tests passed\n");
     return 0;
