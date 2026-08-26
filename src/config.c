@@ -11,13 +11,13 @@ config_t config = {0};
 static const char* get_config_path(void) {
     static char path[512];
     const char* xdg_config = getenv("XDG_CONFIG_HOME");
-    
+
     if (xdg_config) {
         snprintf(path, sizeof(path), "%s/chatwheel/chatwheel.conf", xdg_config);
     } else {
         snprintf(path, sizeof(path), "%s/.config/chatwheel/chatwheel.conf", getenv("HOME"));
     }
-    
+
     return path;
 }
 
@@ -25,7 +25,7 @@ int load_config(void) {
     config.count = 0;  // Reset config before loading
     const char* config_path = get_config_path();
     FILE *f = fopen(config_path, "r");
-    
+
     // Try system config if user config doesn't exist
     if (!f) {
         // No default config is created
@@ -68,15 +68,15 @@ int add_application(const char* name, int is_chat) {
                 printf("Updated %s to %s\n", name, is_chat ? "chat" : "game");
                 return 0;
             }
-            printf("Application '%s' already configured as %s\n", 
+            printf("Application '%s' already configured as %s\n",
                    name, is_chat ? "chat" : "game");
             return -1;
         }
     }
-    
+
     // Add new if not found and space available
     if (config.count >= MAX_APPS) return -1;
-    
+
     strncpy(config.apps[config.count].name, name, 255);
     config.apps[config.count].name[255] = '\0';  // Ensure null termination
     config.apps[config.count].is_chat = is_chat;
@@ -101,7 +101,7 @@ int remove_application(const char* name) {
 void list_configured_apps(void) {
     printf("Configured applications:\n");
     for (int i = 0; i < config.count; i++) {
-        printf("%s (%s)\n", config.apps[i].name, 
+        printf("%s (%s)\n", config.apps[i].name,
                config.apps[i].is_chat ? "Chat" : "Game");
     }
 }

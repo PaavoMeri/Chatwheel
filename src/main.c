@@ -213,12 +213,12 @@ int main(int argc, char *argv[]) {
             load_config();
             char name[256] = {0};
             char type[32] = {0};
-            
+
             if (sscanf(argv[2], "%255[^,],%31s", name, type) != 2) {
                 fprintf(stderr, "Invalid format. Use: NAME,game or NAME,chat\n");
                 return 1;
             }
-            
+
             int is_chat;
             if (strcasecmp(type, "chat") == 0) {
                 is_chat = 1;
@@ -230,7 +230,7 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "Invalid type '%s'. Use: game or chat\n", type);
                 return 1;
             }
-            
+
             if (add_application(name, is_chat) == 0) {
                 save_config();
                 printf("Added %s as %s application\n", name, is_chat ? "chat" : "game");
@@ -317,7 +317,7 @@ int main(int argc, char *argv[]) {
 
     headset_poll_state_init(&poll_state);
     pulse_reconnect_state_init(&reconnect_state);
-    
+
     // Set up signal handling
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
@@ -332,9 +332,9 @@ int main(int argc, char *argv[]) {
         retry_needs_schedule = 1;
         audio_failure_reason = audio_init_result_name(initial_audio_result);
     }
-    
+
     printf("Monitoring chatmix value. Press Ctrl+C to exit.\n\n");
-    
+
     while (running) {
         uint64_t now_ns = 0;
         int have_monotonic_time = monotonic_now_ns(&now_ns) == 0;
@@ -461,7 +461,7 @@ int main(int argc, char *argv[]) {
 
         if (running) usleep(POLL_INTERVAL_MS * 1000);
     }
-    
+
     printf("\nExiting...\n");
     cleanup_audio_server();
     return 0;
