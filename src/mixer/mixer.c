@@ -784,13 +784,13 @@ static int wait_for_operation(pa_operation *op) {
 static void list_apps_callback(pa_context *c, const pa_sink_input_info *i, int eol, void *userdata) {
     (void)c;      // Suppress warning
     (void)userdata; // Suppress warning
-    
+
     if (eol > 0 || !i) return;
 
     const char *app_name = pa_proplist_gets(i->proplist, "application.name");
     const char *binary = pa_proplist_gets(i->proplist, "application.process.binary");
     float volume = pa_cvolume_avg(&i->volume) * 100.0f / PA_VOLUME_NORM;
-    
+
     if (app_name) {
         printf("Application: %-20s Volume: %.0f%% [Index: %u]", app_name, volume, i->index);
         if (binary) {
@@ -811,10 +811,10 @@ void adjust_volume_based_on_chatmix(float chatmix_value) {
     has_valid_chatmix = 1;
 
     printf("\nChatmix position: %.0f%%", targets.normalized * 100);
-    printf("\nTarget volumes - Game: %.0f%% (%.0f%% logarithmic), Chat: %.0f%% (%.0f%% logarithmic)", 
+    printf("\nTarget volumes - Game: %.0f%% (%.0f%% logarithmic), Chat: %.0f%% (%.0f%% logarithmic)",
            targets.game.linear * 100, targets.game.logarithmic * 100,
            targets.chat.linear * 100, targets.chat.logarithmic * 100);
-    
+
     if (context && observed_context_state == PA_CONTEXT_READY &&
         derived_inventory_state_is_available(&application_inventory_state)) {
         route_all_classified_applications(context, &targets);
@@ -847,7 +847,7 @@ static int is_app_configured(const char* app_name) {
 static void list_unconfigured_callback(pa_context *c, const pa_sink_input_info *i, int eol, void *userdata) {
     (void)c;
     (void)userdata;
-    
+
     if (eol > 0 || !i) return;
     const char *app_name = pa_proplist_gets(i->proplist, "application.name");
     if (app_name && !is_app_configured(app_name)) {
@@ -862,8 +862,8 @@ void list_unconfigured_applications(void) {
     }
 
     printf("Unconfigured applications:\n");
-    pa_operation *op = pa_context_get_sink_input_info_list(context, 
-                                                          list_unconfigured_callback, 
+    pa_operation *op = pa_context_get_sink_input_info_list(context,
+                                                          list_unconfigured_callback,
                                                           NULL);
     if (op) {
         wait_for_operation(op);

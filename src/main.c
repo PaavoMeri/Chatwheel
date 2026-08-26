@@ -67,6 +67,14 @@ static const char *audio_event_failure_name(audio_event_status_t status) {
         : "connection lost";
 }
 
+static void finish_chatmix_status_line(int *is_open) {
+    if (!is_open || !*is_open) return;
+
+    printf("\n");
+    *is_open = 0;
+    fflush(stdout);
+}
+
 static int print_active_audio_streams(void) {
     size_t stream_count = get_active_audio_stream_count();
     printf("Active audio streams (%zu):\n", stream_count);
@@ -300,6 +308,7 @@ int main(int argc, char *argv[]) {
     int clock_error_reported = 0;
     int completion_time_missing = 0;
     int retry_needs_schedule = 0;
+    int chatmix_status_line_open = 0;
     const char *audio_failure_reason = NULL;
     pulse_reconnect_state_t reconnect_state;
     audio_init_options_t audio_init_options = {
@@ -353,12 +362,15 @@ int main(int argc, char *argv[]) {
                         now_ns,
                         &retry_delay_ns);
                 if (log_event == PULSE_RECONNECT_LOG_OUTAGE) {
+                    finish_chatmix_status_line(
+                        &chatmix_status_line_open);
                     fprintf(stderr,
                             "PulseAudio unavailable: %s\n",
                             audio_failure_reason
                                 ? audio_failure_reason
                                 : "connection failed");
                 }
+                finish_chatmix_status_line(&chatmix_status_line_open);
                 fprintf(stderr,
                         "PulseAudio reconnect scheduled in %" PRIu64 " seconds\n",
                         retry_delay_ns /
@@ -385,9 +397,11 @@ int main(int argc, char *argv[]) {
                         printf("\033[2K\r"); // Clear line
                         // Pass raw chatmix value (0-128) directly
                         adjust_volume_based_on_chatmix(result.chatmix);
+                        chatmix_status_line_open = 0;
                         printf("Chatmix: %d (%s)",
                                result.chatmix,
                                get_chatmix_mode(result.chatmix));
+                        chatmix_status_line_open = 1;
                         fflush(stdout);
                     }
                     prev_chatmix = result.chatmix;
@@ -428,12 +442,15 @@ int main(int argc, char *argv[]) {
             if (retry_result == AUDIO_INIT_OK) {
                 if (pulse_reconnect_state_mark_connected(&reconnect_state) ==
                     PULSE_RECONNECT_LOG_RECOVERY) {
+                    finish_chatmix_status_line(
+                        &chatmix_status_line_open);
                     fprintf(stderr, "PulseAudio connection recovered\n");
                 }
                 audio_failure_reason = NULL;
             } else if (retry_result == AUDIO_INIT_SHUTDOWN) {
                 running = 0;
             } else {
+                finish_chatmix_status_line(&chatmix_status_line_open);
                 fprintf(stderr,
                         "PulseAudio reconnect attempt failed: %s\n",
                         audio_init_result_name(retry_result));
